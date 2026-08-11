@@ -11,10 +11,13 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteRouteImport } from './routes/_auth/route'
+import { Route as MenuPreviewRouteImport } from './routes/menu-preview'
 import { Route as AuthDashboardRouteRouteImport } from './routes/_auth/_dashboard/route'
 import { Route as LoginIndexRouteImport } from './routes/login/index'
+import { Route as AuthStudioProjectIdRouteRouteImport } from './routes/_auth/studio/$projectId/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as AuthDashboardProjectsIndexRouteImport } from './routes/_auth/_dashboard/projects/index'
+import { Route as AuthStudioProjectIdIndexRouteImport } from './routes/_auth/studio/$projectId/index'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -23,6 +26,11 @@ const IndexRoute = IndexRouteImport.update({
 } as any)
 const AuthRouteRoute = AuthRouteRouteImport.update({
   id: '/_auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MenuPreviewRoute = MenuPreviewRouteImport.update({
+  id: '/menu-preview',
+  path: '/menu-preview',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthDashboardRouteRoute = AuthDashboardRouteRouteImport.update({
@@ -34,6 +42,12 @@ const LoginIndexRoute = LoginIndexRouteImport.update({
   path: '/login/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthStudioProjectIdRouteRoute =
+  AuthStudioProjectIdRouteRouteImport.update({
+    id: '/studio/$projectId',
+    path: '/studio/$projectId',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -45,46 +59,77 @@ const AuthDashboardProjectsIndexRoute =
     path: '/projects/',
     getParentRoute: () => AuthDashboardRouteRoute,
   } as any)
+const AuthStudioProjectIdIndexRoute =
+  AuthStudioProjectIdIndexRouteImport.update({
+    id: '/',
+    path: '/',
+    getParentRoute: () => AuthStudioProjectIdRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/menu-preview': typeof MenuPreviewRoute
   '/login/': typeof LoginIndexRoute
+  '/studio/$projectId': typeof AuthStudioProjectIdRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/projects/': typeof AuthDashboardProjectsIndexRoute
+  '/studio/$projectId/': typeof AuthStudioProjectIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/menu-preview': typeof MenuPreviewRoute
   '/login': typeof LoginIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/projects': typeof AuthDashboardProjectsIndexRoute
+  '/studio/$projectId': typeof AuthStudioProjectIdIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/_auth': typeof AuthRouteRouteWithChildren
+  '/menu-preview': typeof MenuPreviewRoute
   '/_auth/_dashboard': typeof AuthDashboardRouteRouteWithChildren
   '/login/': typeof LoginIndexRoute
+  '/_auth/studio/$projectId': typeof AuthStudioProjectIdRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/_auth/_dashboard/projects/': typeof AuthDashboardProjectsIndexRoute
+  '/_auth/studio/$projectId/': typeof AuthStudioProjectIdIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/login/' | '/api/auth/$' | '/projects/'
+  fullPaths:
+    | '/'
+    | '/menu-preview'
+    | '/login/'
+    | '/studio/$projectId'
+    | '/api/auth/$'
+    | '/projects/'
+    | '/studio/$projectId/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/login' | '/api/auth/$' | '/projects'
+  to:
+    | '/'
+    | '/menu-preview'
+    | '/login'
+    | '/api/auth/$'
+    | '/projects'
+    | '/studio/$projectId'
   id:
     | '__root__'
     | '/'
     | '/_auth'
+    | '/menu-preview'
     | '/_auth/_dashboard'
     | '/login/'
+    | '/_auth/studio/$projectId'
     | '/api/auth/$'
     | '/_auth/_dashboard/projects/'
+    | '/_auth/studio/$projectId/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRouteRoute: typeof AuthRouteRouteWithChildren
+  MenuPreviewRoute: typeof MenuPreviewRoute
   LoginIndexRoute: typeof LoginIndexRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
@@ -105,6 +150,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/menu-preview': {
+      id: '/menu-preview'
+      path: '/menu-preview'
+      fullPath: '/menu-preview'
+      preLoaderRoute: typeof MenuPreviewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_auth/_dashboard': {
       id: '/_auth/_dashboard'
       path: ''
@@ -118,6 +170,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/login/'
       preLoaderRoute: typeof LoginIndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/_auth/studio/$projectId': {
+      id: '/_auth/studio/$projectId'
+      path: '/studio/$projectId'
+      fullPath: '/studio/$projectId'
+      preLoaderRoute: typeof AuthStudioProjectIdRouteRouteImport
+      parentRoute: typeof AuthRouteRoute
     }
     '/api/auth/$': {
       id: '/api/auth/$'
@@ -133,6 +192,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthDashboardProjectsIndexRouteImport
       parentRoute: typeof AuthDashboardRouteRoute
     }
+    '/_auth/studio/$projectId/': {
+      id: '/_auth/studio/$projectId/'
+      path: '/'
+      fullPath: '/studio/$projectId/'
+      preLoaderRoute: typeof AuthStudioProjectIdIndexRouteImport
+      parentRoute: typeof AuthStudioProjectIdRouteRoute
+    }
   }
 }
 
@@ -147,12 +213,28 @@ const AuthDashboardRouteRouteChildren: AuthDashboardRouteRouteChildren = {
 const AuthDashboardRouteRouteWithChildren =
   AuthDashboardRouteRoute._addFileChildren(AuthDashboardRouteRouteChildren)
 
+interface AuthStudioProjectIdRouteRouteChildren {
+  AuthStudioProjectIdIndexRoute: typeof AuthStudioProjectIdIndexRoute
+}
+
+const AuthStudioProjectIdRouteRouteChildren: AuthStudioProjectIdRouteRouteChildren =
+  {
+    AuthStudioProjectIdIndexRoute: AuthStudioProjectIdIndexRoute,
+  }
+
+const AuthStudioProjectIdRouteRouteWithChildren =
+  AuthStudioProjectIdRouteRoute._addFileChildren(
+    AuthStudioProjectIdRouteRouteChildren,
+  )
+
 interface AuthRouteRouteChildren {
   AuthDashboardRouteRoute: typeof AuthDashboardRouteRouteWithChildren
+  AuthStudioProjectIdRouteRoute: typeof AuthStudioProjectIdRouteRouteWithChildren
 }
 
 const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthDashboardRouteRoute: AuthDashboardRouteRouteWithChildren,
+  AuthStudioProjectIdRouteRoute: AuthStudioProjectIdRouteRouteWithChildren,
 }
 
 const AuthRouteRouteWithChildren = AuthRouteRoute._addFileChildren(
@@ -162,6 +244,7 @@ const AuthRouteRouteWithChildren = AuthRouteRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRouteRoute: AuthRouteRouteWithChildren,
+  MenuPreviewRoute: MenuPreviewRoute,
   LoginIndexRoute: LoginIndexRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
