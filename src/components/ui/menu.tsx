@@ -1,90 +1,33 @@
 import { Menu as BaseMenu } from "@base-ui/react/menu";
+import { createContext, useContext } from "react";
+import { cn, tv } from "tailwind-variants";
 
 import Icon from "#/components/ui/icon";
 
-/**
- * Base UI takes either a class string or a function of the part's state, and
- * both forms have to survive being merged with the presets below.
- */
 type ClassName<State> = string | ((state: State) => string | undefined) | undefined;
 
-/**
- * The caller's classes come last so they win a specificity tie. There is no
- * class-merging pass here, so a caller overriding a preset utility is still
- * subject to the order Tailwind emits the two rules in.
- */
 function mergeClassName<State>(preset: string, className: ClassName<State>): ClassName<State> {
-  if (typeof className !== "function") return [preset, className].filter(Boolean).join(" ");
+  if (typeof className !== "function") return cn(preset, className);
 
-  return (state) => [preset, className(state)].filter(Boolean).join(" ");
+  return (state) => cn(preset, className(state));
 }
 
-/** Positions the popup and nothing else — every visual belongs to the popup itself. */
-const POSITIONER_CLASS = "z-50 outline-hidden";
+const SubmenuContext = createContext(false);
 
-const POPUP_CLASS = [
-  // The panel: 18px corners, 8px of padding, and a near-black that lets a
-  // little of the page through.
-  "rounded-[18px] bg-[rgba(22,23,24,0.9)] p-2 text-foreground",
-  // No border — the shadow carries the edge on its own.
-  "shadow-[0_16px_40px_rgba(0,0,0,0.45)] outline-hidden",
-  // `--available-height` is set on the positioner and inherits down, so a menu
-  // taller than the space below its trigger scrolls instead of overflowing it.
-  "max-h-[var(--available-height)] overflow-y-auto overscroll-contain",
-  // Grows from wherever the positioner anchored it.
-  "origin-[var(--transform-origin)] transition-[transform,opacity] duration-150 ease-out",
-  "data-starting-style:scale-95 data-starting-style:opacity-0",
-  "data-ending-style:scale-95 data-ending-style:opacity-0",
-  // Base UI asks for an instant close after a click or a dismiss; animating it
-  // would leave the popup on screen after the action has already run.
-  "data-instant:transition-none"
-].join(" ");
-
-/**
- * One row: 11px text, 8px of padding, 12px corners.
- *
- * The hover colour hangs off `data-highlighted` rather than `hover:` because
- * Base UI highlights on pointer move *and* on keyboard navigation — keying off
- * the attribute is what makes arrowing through the menu look like hovering it.
- */
-const ITEM_CLASS = [
-  "flex cursor-default items-center gap-2 rounded-[12px] p-2 text-[11px] leading-4 select-none",
-  "outline-hidden transition-[background-color,backdrop-filter] duration-100",
-  "data-highlighted:bg-[rgba(218,220,224,0.05)]",
-  // Pressed: the panel behind the row blurs slightly. `backdrop-filter` rather
-  // than `filter`, which would take the row's own label with it.
-  "active:backdrop-blur-[1.5px]",
-  "data-disabled:pointer-events-none data-disabled:text-neutral-500"
-].join(" ");
-
-/** Keeps the row lit while its submenu is open, on top of the shared item styles. */
-const SUBMENU_TRIGGER_CLASS = "data-popup-open:bg-[rgba(218,220,224,0.05)]";
-
-/**
- * Kept mounted and merely hidden when unchecked, so ticking an item doesn't
- * shift its label sideways.
- */
-const INDICATOR_CLASS =
-  "flex size-3.5 shrink-0 items-center justify-center data-unchecked:invisible";
+const itemClass = tv({
+  base: "flex cursor-default items-center gap-2 rounded-xl p-2 text-[11px] leading-4 outline-hidden transition-colors duration-100 select-none data-highlighted:bg-[rgba(218,220,224,0.05)] active:blur-[1.5px] data-disabled:pointer-events-none data-disabled:text-neutral-500",
+  variants: {
+    inset: { true: "ps-7.5" },
+    submenu: { true: "data-popup-open:bg-[rgba(218,220,224,0.05)]" }
+  }
+});
 
 export interface MenuContentProps extends BaseMenu.Popup.Props {
-  /** A parent element for the portal; defaults to `<body>`. */
   container?: BaseMenu.Portal.Props["container"];
-  /** Keeps the popup in the DOM while the menu is closed. */
   keepMounted?: boolean;
-  /**
-   * Everything positioning-related, forwarded to `Menu.Positioner`: `side`,
-   * `align`, `sideOffset`, `collisionPadding`, and so on. A submenu usually
-   * wants `{ side: "inline-end", sideOffset: 4 }`.
-   */
   positioner?: BaseMenu.Positioner.Props;
 }
 
-/**
- * The portal, the positioner and the popup in one part, since a menu never
- * needs one without the others. `className` styles the popup — the visible
- * panel — and positioning goes through {@link MenuContentProps.positioner}.
- */
 export function MenuContent({
   container,
   keepMounted,
@@ -92,38 +35,51 @@ export function MenuContent({
   className,
   ...props
 }: MenuContentProps) {
+  const offsets = useContext(SubmenuContext)
+    ? { sideOffset: 16, alignOffset: -8 }
+    : { sideOffset: 8, alignOffset: 0 };
+
   return (
     <BaseMenu.Portal container={container} keepMounted={keepMounted}>
       <BaseMenu.Positioner
-        sideOffset={8}
         align="start"
+        {...offsets}
         {...positioner}
-        className={mergeClassName(POSITIONER_CLASS, positioner?.className)}
+        className={mergeClassName("z-50 min-w-48 outline-hidden", positioner?.className)}
       >
-        <BaseMenu.Popup {...props} className={mergeClassName(POPUP_CLASS, className)} />
+        <BaseMenu.Popup
+          {...props}
+          className={mergeClassName(
+            "min-w-max origin-(--transform-origin) rounded-[18px] bg-[rgba(22,23,24,0.9)] p-2 text-foreground shadow-[0_16px_40px_rgba(0,0,0,0.45)] outline-hidden backdrop-blur-2xl transition-[transform,opacity] duration-150 ease-out max-h-(--available-height) overflow-y-auto overscroll-contain data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0 data-instant:transition-none",
+            className
+          )}
+        />
       </BaseMenu.Positioner>
     </BaseMenu.Portal>
   );
 }
 
-/** An action. Closes the menu when clicked, unless `closeOnClick={false}`. */
-export function MenuItem({ className, ...props }: BaseMenu.Item.Props) {
-  return <BaseMenu.Item {...props} className={mergeClassName(ITEM_CLASS, className)} />;
+interface InsetProps {
+  inset?: boolean;
 }
 
-/**
- * An item that navigates. Renders an `<a>`, so it keeps middle-click and
- * "open in new tab"; pass `render` to hand it a router link instead.
- */
-export function MenuLinkItem({ className, ...props }: BaseMenu.LinkItem.Props) {
-  return <BaseMenu.LinkItem {...props} className={mergeClassName(ITEM_CLASS, className)} />;
+export function MenuItem({ className, inset, ...props }: BaseMenu.Item.Props & InsetProps) {
+  return <BaseMenu.Item {...props} className={mergeClassName(itemClass({ inset }), className)} />;
 }
 
-/** An item that toggles a setting. Stays open on click, like a native menu. */
+export function MenuLinkItem({ className, inset, ...props }: BaseMenu.LinkItem.Props & InsetProps) {
+  return (
+    <BaseMenu.LinkItem {...props} className={mergeClassName(itemClass({ inset }), className)} />
+  );
+}
+
 export function MenuCheckboxItem({ className, children, ...props }: BaseMenu.CheckboxItem.Props) {
   return (
-    <BaseMenu.CheckboxItem {...props} className={mergeClassName(ITEM_CLASS, className)}>
-      <BaseMenu.CheckboxItemIndicator keepMounted className={INDICATOR_CLASS}>
+    <BaseMenu.CheckboxItem {...props} className={mergeClassName(itemClass(), className)}>
+      <BaseMenu.CheckboxItemIndicator
+        keepMounted
+        className="flex size-3.5 shrink-0 items-center justify-center data-unchecked:invisible"
+      >
         <Icon name="check" className="text-sm" />
       </BaseMenu.CheckboxItemIndicator>
       {children}
@@ -131,11 +87,13 @@ export function MenuCheckboxItem({ className, children, ...props }: BaseMenu.Che
   );
 }
 
-/** One choice inside a `Menu.RadioGroup`. */
 export function MenuRadioItem({ className, children, ...props }: BaseMenu.RadioItem.Props) {
   return (
-    <BaseMenu.RadioItem {...props} className={mergeClassName(ITEM_CLASS, className)}>
-      <BaseMenu.RadioItemIndicator keepMounted className={INDICATOR_CLASS}>
+    <BaseMenu.RadioItem {...props} className={mergeClassName(itemClass(), className)}>
+      <BaseMenu.RadioItemIndicator
+        keepMounted
+        className="flex size-3.5 shrink-0 items-center justify-center data-unchecked:invisible"
+      >
         <span className="size-1.5 rounded-full bg-current" />
       </BaseMenu.RadioItemIndicator>
       {children}
@@ -143,19 +101,16 @@ export function MenuRadioItem({ className, children, ...props }: BaseMenu.RadioI
   );
 }
 
-/**
- * An item that opens a submenu. The caret is part of the row rather than
- * something each caller passes, because it is what marks the row as a submenu.
- */
 export function MenuSubmenuTrigger({
   className,
   children,
+  inset,
   ...props
-}: BaseMenu.SubmenuTrigger.Props) {
+}: BaseMenu.SubmenuTrigger.Props & InsetProps) {
   return (
     <BaseMenu.SubmenuTrigger
       {...props}
-      className={mergeClassName(`${ITEM_CLASS} ${SUBMENU_TRIGGER_CLASS}`, className)}
+      className={mergeClassName(itemClass({ inset, submenu: true }), className)}
     >
       {children}
       <Icon name="chevron_right" className="ml-auto text-sm text-neutral-400" />
@@ -163,7 +118,14 @@ export function MenuSubmenuTrigger({
   );
 }
 
-/** Names a `Menu.Group`; announced with the group rather than focusable itself. */
+export function MenuSubmenu({ children, ...props }: BaseMenu.SubmenuRoot.Props) {
+  return (
+    <BaseMenu.SubmenuRoot {...props}>
+      <SubmenuContext value={true}>{children}</SubmenuContext>
+    </BaseMenu.SubmenuRoot>
+  );
+}
+
 export function MenuGroupLabel({ className, ...props }: BaseMenu.GroupLabel.Props) {
   return (
     <BaseMenu.GroupLabel
@@ -176,7 +138,6 @@ export function MenuGroupLabel({ className, ...props }: BaseMenu.GroupLabel.Prop
   );
 }
 
-/** A hairline between groups of items. */
 export function MenuSeparator({ className, ...props }: BaseMenu.Separator.Props) {
   return (
     <BaseMenu.Separator
@@ -186,22 +147,6 @@ export function MenuSeparator({ className, ...props }: BaseMenu.Separator.Props)
   );
 }
 
-/**
- * The menu, preset to this app's shape. Parts that carry no styling of their
- * own — the root, the trigger, groups — are Base UI's, re-exported here so a
- * whole menu can be assembled from a single import:
- *
- * ```tsx
- * <Menu.Root>
- *   <Menu.Trigger>…</Menu.Trigger>
- *   <Menu.Content>
- *     <Menu.Item onClick={rename}>Rename</Menu.Item>
- *     <Menu.Separator />
- *     <Menu.Item onClick={remove}>Delete</Menu.Item>
- *   </Menu.Content>
- * </Menu.Root>
- * ```
- */
 const Menu = {
   Root: BaseMenu.Root,
   Trigger: BaseMenu.Trigger,
@@ -215,10 +160,8 @@ const Menu = {
   Group: BaseMenu.Group,
   GroupLabel: MenuGroupLabel,
   Separator: MenuSeparator,
-  /** `Menu.SubmenuRoot` in Base UI; wraps a {@link MenuSubmenuTrigger} and its own `Menu.Content`. */
-  Submenu: BaseMenu.SubmenuRoot,
+  Submenu: MenuSubmenu,
   SubmenuTrigger: MenuSubmenuTrigger,
-  /** Connects a `Menu.Root` to triggers rendered outside of it. */
   createHandle: BaseMenu.createHandle
 };
 

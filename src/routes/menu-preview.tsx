@@ -14,14 +14,14 @@ function MenuPreview() {
         <Menu.Trigger className="rounded-lg bg-neutral-800 px-3 py-2 text-sm text-white">
           Open menu
         </Menu.Trigger>
-        <Menu.Content className="min-w-48">
+        <Menu.Content>
           <Menu.Group>
             <Menu.GroupLabel>Project</Menu.GroupLabel>
             <Menu.Item>
               <Icon name="edit" className="text-sm" />
               Rename
             </Menu.Item>
-            <Menu.Item>Duplicate</Menu.Item>
+            <Menu.Item inset>Duplicate</Menu.Item>
           </Menu.Group>
           <Menu.CheckboxItem defaultChecked>Show hidden</Menu.CheckboxItem>
           <Menu.Separator />
@@ -31,14 +31,16 @@ function MenuPreview() {
           </Menu.RadioGroup>
           <Menu.Separator />
           <Menu.Submenu>
-            <Menu.SubmenuTrigger>Share</Menu.SubmenuTrigger>
-            <Menu.Content positioner={{ side: "inline-end", sideOffset: 4 }}>
+            <Menu.SubmenuTrigger inset>Share</Menu.SubmenuTrigger>
+            <Menu.Content>
               <Menu.Item>Copy link</Menu.Item>
               <Menu.Item>Invite</Menu.Item>
             </Menu.Content>
           </Menu.Submenu>
-          <Menu.Item disabled>Archive</Menu.Item>
-          <Menu.Item>Delete</Menu.Item>
+          <Menu.Item inset disabled>
+            Archive
+          </Menu.Item>
+          <Menu.Item inset>Delete</Menu.Item>
         </Menu.Content>
       </Menu.Root>
     </div>
