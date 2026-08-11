@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="GithubDefaultAccount">
+    <option name="defaultAccountId" value="ecbacad5-798c-486b-adcb-f416c1ed9ac2" />
+  </component>
+  <component name="MarkdownSettings">
+    <option name="customStylesheetText" value="*{&#10;    font-family: &quot;Andale Mono&quot;&#10;}" />
+    <option name="useCustomStylesheetText" value="true" />
+  </component>
+  <component name="ProjectRootManager" version="2" project-jdk-name="openjdk-26" project-jdk-type="JavaSDK">
+    <output url="file://$PROJECT_DIR$/out" />
+  </component>
+</project>
