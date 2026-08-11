@@ -1,5 +1,17 @@
 import { Link } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
+
+import Button from "#/components/ui/button";
+import Dialog, { AlertDialog } from "#/components/ui/dialog";
+import Icon from "#/components/ui/icon";
+import Menu from "#/components/ui/menu";
+import {
+  PROJECT_NAME_MAX_LENGTH,
+  useArchiveProject,
+  useDeleteProject,
+  useRenameProject
+} from "#/lib/projects";
 
 export interface ProjectCardProps {
   id: string;
@@ -42,40 +54,6 @@ function coverInitial(name: string) {
 }
 
 /**
- * Everything that decides the card's size and shape, and nothing that decides
- * how it behaves. {@link ProjectCardSkeleton} renders the same shell, which is
- * what stops the placeholder and the real card from drifting apart — the one
- * thing a skeleton has to get right.
- */
-const CARD_SHELL_CLASS =
-  "flex h-full flex-col overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900";
-
-/**
- * The whole card is the link target. That is legal markup because the card holds
- * no interactive content of its own, and it means the focus ring outlines the
- * thing a keyboard user is actually about to activate.
- */
-const CARD_CLASS = [
-  CARD_SHELL_CLASS,
-  "transition hover:border-neutral-700 hover:bg-neutral-800/60",
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-50"
-].join(" ");
-
-/** A fixed ratio, so nothing reflows while covers stream in. */
-const COVER_CLASS =
-  "relative grid aspect-[16/10] w-full place-items-center overflow-hidden bg-neutral-800";
-
-const COVER_INITIAL_CLASS =
-  "relative text-3xl font-semibold tracking-tight text-neutral-400 select-none";
-
-/**
- * Layered over the generated cover instead of replacing it, so a dead URL falls
- * back to the tint rather than leaving a hole. `alt=""` because the heading
- * below already names the project — a second announcement would only be noise.
- */
-const COVER_IMAGE_CLASS = "absolute inset-0 size-full object-cover";
-
-/**
  * Unmounts itself when the image cannot load. That is not what `alt=""` does:
  * Chrome still paints its broken-image glyph over the generated cover, which is
  * exactly the hole the fallback exists to avoid.
@@ -85,6 +63,9 @@ const COVER_IMAGE_CLASS = "absolute inset-0 size-full object-cover";
  * hydrates, and React does not replay an `error` event it never witnessed. So
  * the settled-on-arrival case is checked once on mount, and `onError` covers
  * everything that fails afterwards.
+ *
+ * `alt=""` because the heading below already names the project — a second
+ * announcement would only be noise.
  */
 function CoverImage({ src }: { src: string }) {
   const [failed, setFailed] = useState(false);
@@ -106,16 +87,12 @@ function CoverImage({ src }: { src: string }) {
       loading="lazy"
       decoding="async"
       onError={() => setFailed(true)}
-      className={COVER_IMAGE_CLASS}
+      // Layered over the generated cover instead of replacing it, so a dead URL
+      // falls back to the tint rather than leaving a hole.
+      className="absolute inset-0 size-full object-cover"
     />
   );
 }
-
-const BODY_CLASS = "flex min-w-0 flex-1 flex-col gap-1 p-4";
-
-const NAME_CLASS = "truncate text-sm font-medium text-foreground";
-
-const DESCRIPTION_CLASS = "line-clamp-2 text-sm text-neutral-400";
 
 export default function ProjectCard({ id, name, description, image }: ProjectCardProps) {
   // `name` is NOT NULL but nothing stops it being whitespace, and an empty
@@ -123,14 +100,37 @@ export default function ProjectCard({ id, name, description, image }: ProjectCar
   const title = name.trim() || "Untitled project";
 
   return (
-    <Link to="/studio/$projectId" params={{ projectId: id }} className={CARD_CLASS}>
-      <div className={COVER_CLASS}>
+    /*
+     * Borderless and unfilled at rest: the card is its cover and its text, and
+     * the page shows through everything else. The fill belongs to hover, and
+     * with no border it is the only thing that ever marks the card's edge.
+     *
+     * That fill has to survive the pointer leaving the card for the menu it
+     * opened — the popup is portalled to `<body>`, so the pointer really is
+     * outside by then. `has-data-popup-open` reads the attribute Base UI puts
+     * on the trigger, which keeps the lit state where it is caused rather than
+     * mirroring it into React state that only styling would ever read.
+     *
+     * `relative` anchors the link's stretched pseudo-element; `group` is what
+     * fades the menu button in with the fill rather than on its own hover. The
+     * focus ring is drawn here but keyed to the link inside, so tabbing to the
+     * project outlines the whole card while tabbing on to its menu button does
+     * not — that one draws its own.
+     */
+    <div className="group relative flex h-full flex-col rounded-xl transition-colors hover:bg-neutral-800/60 has-data-popup-open:bg-neutral-800/60 has-[a:focus-visible]:outline-2 has-[a:focus-visible]:outline-offset-2 has-[a:focus-visible]:outline-neutral-50">
+      {/* Rounded on all four corners and clipping its own image, so the cover
+          reads as a tile sitting on the card rather than as the card's top
+          edge. A fixed ratio, so nothing reflows while covers stream in. */}
+      <div className="relative grid aspect-[16/10] w-full place-items-center overflow-hidden rounded-xl bg-neutral-800">
         <span
           aria-hidden={true}
           className="absolute inset-0"
           style={{ backgroundColor: coverTint(id) }}
         />
-        <span aria-hidden={true} className={COVER_INITIAL_CLASS}>
+        <span
+          aria-hidden={true}
+          className="relative text-3xl font-semibold tracking-tight text-neutral-400 select-none"
+        >
           {coverInitial(title)}
         </span>
         {/* Keyed by url so a project that swaps its image gets a fresh attempt
@@ -138,20 +138,283 @@ export default function ProjectCard({ id, name, description, image }: ProjectCar
         {image ? <CoverImage key={image} src={image} /> : null}
       </div>
 
-      <div className={BODY_CLASS}>
-        <h2 className={NAME_CLASS}>{title}</h2>
-        {description ? <p className={DESCRIPTION_CLASS}>{description}</p> : null}
+      <div className="flex min-w-0 flex-1 flex-col gap-1 p-4">
+        <div className="flex items-start gap-1">
+          {/* `min-w-0` so a long name truncates instead of pushing the menu out. */}
+          <h2 className="text-foreground min-w-0 flex-1 truncate text-sm font-medium">
+            {/*
+             * The whole card is one link target, but by a stretched
+             * pseudo-element rather than by wrapping everything: the card now
+             * holds a button, and a button inside an `<a>` is neither legal
+             * markup nor clickable in the way anyone wants. The link keeps the
+             * project's name as its text, so its accessible name is the name.
+             * Its own outline is dropped because the card draws that ring
+             * around itself instead of around three words of text.
+             */}
+            <Link
+              to="/studio/$projectId"
+              params={{ projectId: id }}
+              className="outline-hidden after:absolute after:inset-0"
+            >
+              {title}
+            </Link>
+          </h2>
+          <ProjectActions id={id} name={title} />
+        </div>
+        {description ? (
+          <p className="line-clamp-2 text-sm text-neutral-400">{description}</p>
+        ) : null}
       </div>
-    </Link>
+    </div>
   );
 }
 
-/** Shown by the route's pending state; shares {@link CARD_SHELL_CLASS} with the real card. */
+type ProjectAction = "rename" | "archive" | "delete";
+
+/**
+ * The menu and the three dialogs it opens. All four are here rather than one
+ * component each because they share the state that decides which is showing:
+ * exactly one action can be in flight, and a menu row selects it.
+ *
+ * The dialogs are siblings of the menu rather than children of it. A menu
+ * closes the moment a row is clicked and takes its whole popup out of the DOM
+ * with it, so a dialog nested inside would be unmounted by the click that was
+ * supposed to open it.
+ */
+function ProjectActions({ id, name }: { id: string; name: string }) {
+  const [action, setAction] = useState<ProjectAction | null>(null);
+  const [draftName, setDraftName] = useState(name);
+  const inputId = useId();
+
+  const rename = useRenameProject();
+  const archive = useArchiveProject();
+  const remove = useDeleteProject();
+
+  function open(next: ProjectAction) {
+    // The hooks outlive the dialogs — this component stays mounted while they
+    // come and go — so a failed attempt would otherwise still be on screen the
+    // next time one is opened. The draft is re-seeded for the same reason: it
+    // starts from the name as it is now, not from an edit that was abandoned.
+    rename.reset();
+    archive.reset();
+    remove.reset();
+    setDraftName(name);
+    setAction(next);
+  }
+
+  function close() {
+    setAction(null);
+  }
+
+  function submitRename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const next = draftName.trim();
+
+    // The submit button is disabled in both cases; this is the keyboard path to
+    // the same submit, which a disabled button does not always intercept.
+    if (!next || rename.isPending) return;
+
+    rename.mutate({ id, name: next }, { onSuccess: close });
+  }
+
+  return (
+    <>
+      <Menu.Root>
+        {/*
+         * Invisible until the card is hovered, but never removed: `opacity-0`
+         * keeps it in the tab order and in the accessibility tree, so the
+         * actions are reachable by keyboard on a card nobody is pointing at.
+         * Focus and an open menu both bring it back, and so does a coarse
+         * pointer — a touch screen has no hover to reveal it with, and a
+         * control that can only be found by hovering is a control a phone does
+         * not have.
+         *
+         * The transition is restated because it merges over the button's own
+         * `transition-colors`, and the opacity has to ease alongside the fill it
+         * appears with. `filter` stays out of it: the press blur every button on
+         * this surface does should land at once rather than fade in.
+         */}
+        <Menu.Trigger
+          aria-label={`Actions for ${name}`}
+          render={
+            <Button
+              variant="ghost"
+              size="sm"
+              square
+              className="relative z-10 -me-1 -mt-0.5 opacity-0 transition-[color,background-color,opacity] group-hover:opacity-100 focus-visible:opacity-100 data-popup-open:bg-[rgba(218,220,224,0.08)] data-popup-open:opacity-100 pointer-coarse:opacity-100"
+            />
+          }
+        >
+          <Icon name="more_vert" className="text-base" />
+        </Menu.Trigger>
+        <Menu.Content positioner={{ align: "end", sideOffset: 4 }}>
+          <Menu.Item onClick={() => open("rename")}>
+            <Icon name="edit" className="text-sm" />
+            Rename
+          </Menu.Item>
+          <Menu.Item onClick={() => open("archive")}>
+            <Icon name="archive" className="text-sm" />
+            Archive
+          </Menu.Item>
+          <Menu.Separator />
+          {/* Only the label is red. The row's highlight stays neutral because
+              overriding the menu's preset would be a specificity tie broken by
+              whichever rule Tailwind happens to emit last. */}
+          <Menu.Item className="text-red-400" onClick={() => open("delete")}>
+            <Icon name="delete" className="text-sm" />
+            Delete
+          </Menu.Item>
+        </Menu.Content>
+      </Menu.Root>
+
+      {/* Dismissible, unlike the two below it: nothing has happened yet, and
+          the draft is thrown away either way. */}
+      <Dialog.Root
+        open={action === "rename"}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) close();
+        }}
+      >
+        <Dialog.Content>
+          <form onSubmit={submitRename}>
+            <Dialog.Title>Rename project</Dialog.Title>
+            <label htmlFor={inputId} className="mt-4 block text-sm text-neutral-400">
+              Name
+            </label>
+            <input
+              id={inputId}
+              value={draftName}
+              onChange={(event) => setDraftName(event.target.value)}
+              maxLength={PROJECT_NAME_MAX_LENGTH}
+              placeholder="Untitled project"
+              disabled={rename.isPending}
+              className="text-foreground mt-1.5 w-full rounded-[12px] border border-[rgba(218,220,224,0.1)] bg-[rgba(218,220,224,0.05)] px-3 py-2 text-sm outline-hidden transition placeholder:text-neutral-500 focus-visible:border-neutral-500 disabled:opacity-50"
+            />
+            <ActionError error={rename.error} />
+            <div className="mt-5 flex justify-end gap-2">
+              <Dialog.Close disabled={rename.isPending} render={<Button variant="ghost" />}>
+                Cancel
+              </Dialog.Close>
+              {/* `pending` rather than `disabled` while the rename is in flight:
+                  the button keeps focus and Base UI swallows the click anyway,
+                  so nothing submits twice. */}
+              <Button type="submit" pending={rename.isPending} disabled={draftName.trim() === ""}>
+                Rename
+              </Button>
+            </div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Root>
+
+      <ConfirmDialog
+        open={action === "archive"}
+        onClose={close}
+        title="Archive project?"
+        description={`“${name}” will be hidden from this list. Nothing in the app can bring it back yet.`}
+        confirmLabel="Archive"
+        error={archive.error}
+        pending={archive.isPending}
+        onConfirm={() => archive.mutate({ id }, { onSuccess: close })}
+      />
+
+      <ConfirmDialog
+        open={action === "delete"}
+        onClose={close}
+        title="Delete project?"
+        description={`“${name}” and everything in it will be deleted. This cannot be undone.`}
+        confirmLabel="Delete"
+        destructive
+        error={remove.error}
+        pending={remove.isPending}
+        onConfirm={() => remove.mutate({ id }, { onSuccess: close })}
+      />
+    </>
+  );
+}
+
+interface ConfirmDialogProps {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  description: ReactNode;
+  confirmLabel: string;
+  /** Paints the confirm button red; for the one that destroys something. */
+  destructive?: boolean;
+  error: Error | null;
+  pending: boolean;
+  onConfirm: () => void;
+}
+
+/**
+ * An alert dialog rather than a plain one, so the decision has to be taken or
+ * declined — clicking away from it does nothing.
+ */
+function ConfirmDialog({
+  open,
+  onClose,
+  title,
+  description,
+  confirmLabel,
+  destructive,
+  error,
+  pending,
+  onConfirm
+}: ConfirmDialogProps) {
+  return (
+    <AlertDialog.Root
+      open={open}
+      onOpenChange={(isOpen) => {
+        if (!isOpen) onClose();
+      }}
+    >
+      <AlertDialog.Content>
+        <AlertDialog.Title>{title}</AlertDialog.Title>
+        <AlertDialog.Description>{description}</AlertDialog.Description>
+        <ActionError error={error} />
+        <div className="mt-5 flex justify-end gap-2">
+          <AlertDialog.Close disabled={pending} render={<Button variant="ghost" />}>
+            Cancel
+          </AlertDialog.Close>
+          <Button
+            variant={destructive ? "danger" : "primary"}
+            pending={pending}
+            onClick={onConfirm}
+          >
+            {confirmLabel}
+          </Button>
+        </div>
+      </AlertDialog.Content>
+    </AlertDialog.Root>
+  );
+}
+
+/**
+ * A failed server function can carry driver-level detail — a connection string,
+ * a fragment of SQL — so only the development build shows the original message,
+ * the same trade the projects route makes.
+ */
+function ActionError({ error }: { error: Error | null }) {
+  if (!error) return null;
+
+  return (
+    <p role="alert" className="mt-3 text-sm text-red-400">
+      {import.meta.env.DEV ? error.message : "Something went wrong. Please try again."}
+    </p>
+  );
+}
+
+/**
+ * Shown by the route's pending state. It repeats the card's geometry — the
+ * cover's ratio and radius, the body's padding — because the one thing a
+ * skeleton has to get right is not moving anything when the real card replaces
+ * it.
+ */
 export function ProjectCardSkeleton() {
   return (
-    <div aria-hidden={true} className={`${CARD_SHELL_CLASS} animate-pulse`}>
-      <div className={COVER_CLASS} />
-      <div className={`${BODY_CLASS} gap-2`}>
+    <div aria-hidden={true} className="flex h-full animate-pulse flex-col rounded-xl">
+      <div className="aspect-[16/10] w-full rounded-xl bg-neutral-800" />
+      <div className="flex min-w-0 flex-1 flex-col gap-2 p-4">
         <div className="h-4 w-2/5 rounded bg-neutral-800" />
         <div className="h-3 w-full rounded bg-neutral-800/60" />
         <div className="h-3 w-3/5 rounded bg-neutral-800/60" />
