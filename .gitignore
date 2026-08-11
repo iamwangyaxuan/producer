@@ -32,6 +32,9 @@ src/paraglide
 todos.json
 mcp-todos.json
 
+# Agent 本地配置
+.claude
+
 # 日志
 *.log
 npm-debug.log*
