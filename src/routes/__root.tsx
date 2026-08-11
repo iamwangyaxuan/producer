@@ -2,7 +2,9 @@ import { TanStackDevtools } from "@tanstack/react-devtools";
 import type { QueryClient } from "@tanstack/react-query";
 import { HeadContent, Scripts, createRootRouteWithContext } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
+import type { ReactNode } from "react";
 
+import ToastProvider from "#/components/ui/toast";
 import { getLocale } from "#/paraglide/runtime";
 
 import TanStackQueryDevtools from "../integrations/tanstack-query/devtools";
@@ -24,35 +26,39 @@ export const Route = createRootRouteWithContext<MyRouterContext>()({
 
   head: () => ({
     meta: [
-      {
-        charSet: "utf-8"
-      },
-      {
-        name: "viewport",
-        content: "width=device-width, initial-scale=1"
-      },
-      {
-        title: "TanStack Start Starter"
-      }
+      { charSet: "utf-8" },
+      { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { title: "Producer" },
+      { name: "description", content: "Producer" }
     ],
     links: [
       {
         rel: "stylesheet",
         href: appCss
+      },
+      { rel: "preconnect", href: "https://fonts.googleapis.com" },
+      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Source+Sans+3:ital,wght@0,200..900;1,200..900&display=swap"
+      },
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined&display=block"
       }
     ]
   }),
   shellComponent: RootDocument
 });
 
-function RootDocument({ children }: { children: React.ReactNode }) {
+function RootDocument({ children }: { children: ReactNode }) {
   return (
     <html lang={getLocale()}>
       <head>
         <HeadContent />
       </head>
       <body>
-        {children}
+        <ToastProvider>{children}</ToastProvider>
         <TanStackDevtools
           config={{
             position: "bottom-right"
