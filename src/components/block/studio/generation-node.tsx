@@ -19,6 +19,19 @@ export interface GenerationNodeData extends Record<string, unknown> {
   aspectRatio?: string;
   status: GenerationStatus;
   src?: string;
+  /**
+   * The collaboration client the request started in. Informational — the
+   * failure watchdog judges on age, not presence — but it says which tab to
+   * blame when a generation dies with its creator.
+   */
+  generatedBy?: number;
+  /**
+   * When the generation was asked for. Generation runs in the creator's tab,
+   * so a tab that closes mid-request leaves a node pending forever; any
+   * client may declare it failed once this stamp is old enough that no
+   * request could still be running.
+   */
+  requestedAt?: number;
 }
 
 export type GenerationNode = Node<GenerationNodeData, "generation">;

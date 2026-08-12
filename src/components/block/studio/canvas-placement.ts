@@ -1,11 +1,26 @@
 import type { XYPosition } from "@xyflow/react";
 
-import { nodeSize } from "#/components/block/studio/generation-node";
-import type { GenerationNode } from "#/components/block/studio/generation-node";
+import { NODE_WIDTH, nodeSize } from "#/components/block/studio/generation-node";
+import type { GenerationNodeData } from "#/components/block/studio/generation-node";
 
 export interface Size {
   width: number;
   height: number;
+}
+
+/**
+ * The little a node has to be to be placed: somewhere it is, something about
+ * how big it is. Structural rather than React Flow's node type so the shared
+ * document's stored records — which carry geometry but keep `data` in a
+ * separate map — can be placed against directly.
+ */
+export interface Placeable {
+  id: string;
+  position: XYPosition;
+  width?: number | null;
+  height?: number | null;
+  measured?: { width?: number; height?: number };
+  data?: GenerationNodeData;
 }
 
 /** Space left between neighbours, so "free" does not come out meaning "touching". */
@@ -37,13 +52,16 @@ function overlaps(a: XYPosition, aSize: Size, b: XYPosition, bSize: Size) {
  * browser last measured, what a resize wrote onto the node, and — for a node
  * added in this very tick, which has neither — what its ratio says it will be.
  */
-export function sizeOf(node: GenerationNode): Size {
+export function sizeOf(node: Placeable): Size {
   const measured = node.measured;
 
   if (measured?.width && measured.height) return { width: measured.width, height: measured.height };
   if (node.width && node.height) return { width: node.width, height: node.height };
 
-  return nodeSize(node.data);
+  // A stored record always carries its dimensions, so this last resort only
+  // exists for a node manufactured somewhere new — and even then a square of
+  // the standard width beats a zero-sized box everything lands on top of.
+  return node.data ? nodeSize(node.data) : { width: NODE_WIDTH, height: NODE_WIDTH };
 }
 
 /**
@@ -113,7 +131,7 @@ const MAX_CANDIDATES = 600;
 export function freePosition(
   anchor: XYPosition,
   size: Size,
-  taken: readonly GenerationNode[]
+  taken: readonly Placeable[]
 ): XYPosition {
   const occupied = taken.map((node) => ({ position: node.position, size: sizeOf(node) }));
   const clear = (at: XYPosition) =>
@@ -185,7 +203,7 @@ export function freePosition(
  * to go looking for it. Creation order is kept: the canvas is a record of what
  * was made, and sorting by size would scramble that.
  */
-export function tidyPositions(nodes: readonly GenerationNode[]): Map<string, XYPosition> {
+export function tidyPositions(nodes: readonly Placeable[]): Map<string, XYPosition> {
   const layout = new Map<string, XYPosition>();
 
   if (nodes.length === 0) return layout;
