@@ -55,8 +55,21 @@ const buttonClass = tv({
      * `aspect-square` rather than a width per size: the height is already fixed,
      * so one rule squares off all three of them.
      */
-    square: {
+    icon: {
       true: "aspect-square px-0"
+    },
+    /**
+     * Corners only. What turns `rounded-full` into a circle rather than a pill
+     * is the equal width and height, and that comes from `icon` — so this stays
+     * useful on its own for a pill-shaped button that still has a label.
+     *
+     * `square` carries no classes because each size already ships the radius
+     * that suits its height. It is spelled out anyway so that the default is
+     * written down somewhere rather than implied by the absence of a value.
+     */
+    shape: {
+      square: "",
+      circle: "rounded-full"
     },
     /**
      * A pending button is disabled, but it should not be dimmed like one — the
@@ -72,6 +85,7 @@ const buttonClass = tv({
   defaultVariants: {
     variant: "primary",
     size: "md",
+    shape: "square",
     pending: false
   }
 });
@@ -99,7 +113,8 @@ export interface ButtonProps extends BaseButton.Props, VariantProps<typeof butto
 export default function Button({
   variant,
   size,
-  square,
+  icon,
+  shape,
   pending = false,
   disabled,
   focusableWhenDisabled,
@@ -114,16 +129,16 @@ export default function Button({
       focusableWhenDisabled={focusableWhenDisabled ?? pending}
       aria-busy={pending || undefined}
       className={mergeClassName(
-        buttonClass({ variant, size, square, pending }),
+        buttonClass({ variant, size, icon, shape, pending }),
         className as ClassName<BaseButton.State>
       )}
     >
       {pending ? (
         <>
           <Icon name="progress_activity" className="animate-spin text-[1.25em]" />
-          {/* A square button has no room for both, so while it is pending the
+          {/* An icon button has no room for both, so while it is pending the
               spinner stands in for the icon rather than being wedged beside it. */}
-          {square ? null : children}
+          {icon ? null : children}
         </>
       ) : (
         children

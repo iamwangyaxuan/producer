@@ -241,7 +241,7 @@ function ProjectActions({ id, name }: { id: string; name: string }) {
             <Button
               variant="ghost"
               size="sm"
-              square
+              icon
               className="relative z-10 -me-1 -mt-0.5 opacity-0 transition-[color,background-color,opacity] group-hover:opacity-100 focus-visible:opacity-100 data-popup-open:bg-[rgba(218,220,224,0.08)] data-popup-open:opacity-100 pointer-coarse:opacity-100"
             />
           }
