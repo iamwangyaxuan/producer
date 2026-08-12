@@ -18,6 +18,41 @@
    * box that exists to stand in for solid content.
    */
   --animate-skeleton: skeleton 1.8s ease-in-out infinite;
+
+  /**
+   * The one shape `cubic-bezier` cannot draw. A bezier is bounded by its own
+   * endpoints, so it can be fast-then-slow but can never carry past the target
+   * and settle back — and that overshoot is most of what reads as a spring.
+   * `linear()` sidesteps the problem by not being a curve at all: these are the
+   * sampled positions of a real spring (stiffness 300, damping 24, mass 1),
+   * 25ms apart, which the browser joins up with straight lines.
+   *
+   * The 450ms it was solved over is part of the curve rather than a separate
+   * choice — the stops are evenly spaced, so a different `duration-*` replays
+   * the same physics in slow motion instead of retuning it. Use it with
+   * `duration-450`.
+   */
+  --ease-spring: linear(
+    0,
+    0.0763,
+    0.2464,
+    0.4445,
+    0.6302,
+    0.7835,
+    0.8978,
+    0.9741,
+    1.0202,
+    1.0425,
+    1.0489,
+    1.0455,
+    1.0374,
+    1.0278,
+    1.0186,
+    1.011,
+    1.0053,
+    1.0014,
+    1
+  );
 }
 
 @keyframes skeleton {
