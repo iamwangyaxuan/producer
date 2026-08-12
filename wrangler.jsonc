@@ -7,7 +7,28 @@
   "name": "producer",
   "compatibility_date": "2026-08-08",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "@tanstack/react-start/server-entry",
+  /**
+   * A custom entry rather than Start's own: it re-exports Start's fetch
+   * handler unchanged, and additionally exports the CanvasRoom Durable Object
+   * and routes its `/parties/...` WebSocket traffic — Start has no WebSocket
+   * path of its own.
+   */
+  "main": "src/server.ts",
+  "durable_objects": {
+    "bindings": [
+      {
+        // The binding's kebab-cased name is also the URL segment the client
+        // dials: /parties/canvas-room/<projectId>.
+        "name": "CanvasRoom",
+        "class_name": "CanvasRoom"
+      }
+    ]
+  },
+  // The declarative successor to "migrations": marks the class as a SQLite-
+  // backed Durable Object (which is where each canvas persists its document).
+  "exports": {
+    "CanvasRoom": { "type": "durable-object", "storage": "sqlite" }
+  },
   "observability": {
     "enabled": true
   },
