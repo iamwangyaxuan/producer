@@ -20,6 +20,12 @@ export const auth = betterAuth({
   experimental: { joins: true },
   secret: env.BETTER_AUTH_SECRET,
   baseURL: env.BETTER_AUTH_URL,
+  // `*.localhost` resolves to the loopback interface in every browser, so a
+  // second origin on the same dev server is how two accounts can be signed in
+  // side by side (cookie jars are per-origin). Trusting it only widens the
+  // origin check for pages that already run on this machine; no request from
+  // the outside world can carry this Origin header.
+  trustedOrigins: ["http://app.localhost:3000"],
   database: drizzleAdapter(db, {
     provider: "pg",
     schema,
