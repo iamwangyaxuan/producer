@@ -10,6 +10,24 @@
   --font-icon: var(--font-icon);
   --color-background: #000;
   --color-foreground: #fff;
+
+  /**
+   * A skeleton breathes by changing colour rather than by fading.
+   * `animate-pulse` animates opacity, which would make an opaque placeholder
+   * translucent for most of every cycle — the dot grid would show through the
+   * box that exists to stand in for solid content.
+   */
+  --animate-skeleton: skeleton 1.8s ease-in-out infinite;
+}
+
+@keyframes skeleton {
+  0%,
+  100% {
+    background-color: #1a1b1d;
+  }
+  50% {
+    background-color: #26282b;
+  }
 }
 
 @layer base {
