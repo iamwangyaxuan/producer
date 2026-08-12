@@ -1,7 +1,7 @@
 import type { XYPosition } from "@xyflow/react";
 
-import { nodeSize } from "#/components/block/generation-node";
-import type { GenerationNode } from "#/components/block/generation-node";
+import { nodeSize } from "#/components/block/studio/generation-node";
+import type { GenerationNode } from "#/components/block/studio/generation-node";
 
 export interface Size {
   width: number;

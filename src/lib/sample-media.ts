@@ -1,4 +1,4 @@
-import type { ComposerSubmission, Modality } from "#/components/block/ai-composer";
+import type { ComposerSubmission, Modality } from "#/components/block/studio/ai-composer";
 
 /**
  * Stand-in results for a generation backend that does not exist yet.

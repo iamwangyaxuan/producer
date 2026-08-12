@@ -14,23 +14,23 @@ import {
 import type { Connection, Edge, NodeChange } from "@xyflow/react";
 import { useRef, useState } from "react";
 
-import AIComposer from "#/components/block/ai-composer";
-import type { ComposerSubmission } from "#/components/block/ai-composer";
+import AIComposer from "#/components/block/studio/ai-composer";
+import type { ComposerSubmission } from "#/components/block/studio/ai-composer";
 import AlignmentGuides, {
   alignmentFor,
   resizeAlignmentFor,
   spacingFor
-} from "#/components/block/alignment-guides";
-import type { Guides } from "#/components/block/alignment-guides";
-import { freePosition, tidyPositions } from "#/components/block/canvas-placement";
+} from "#/components/block/studio/alignment-guides";
+import type { Guides } from "#/components/block/studio/alignment-guides";
+import { freePosition, tidyPositions } from "#/components/block/studio/canvas-placement";
 import {
   DragModeContext,
   GENERATION_NODE_TYPES,
   isVisual,
   nodeSize
-} from "#/components/block/generation-node";
-import type { GenerationNode } from "#/components/block/generation-node";
-import StudioToolbar from "#/components/block/studio-toolbar";
+} from "#/components/block/studio/generation-node";
+import type { GenerationNode } from "#/components/block/studio/generation-node";
+import StudioToolbar from "#/components/block/studio/studio-toolbar";
 import { useDragMode } from "#/components/block/use-drag-mode";
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";

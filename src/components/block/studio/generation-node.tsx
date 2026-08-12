@@ -3,8 +3,8 @@ import type { ControlPosition, Node, NodeProps, NodeTypes } from "@xyflow/react"
 import { createContext, useContext, useRef, useState } from "react";
 import { cn } from "tailwind-variants";
 
-import type { Modality } from "#/components/block/ai-composer";
 import { ConfirmDialog } from "#/components/block/project-dialogs";
+import type { Modality } from "#/components/block/studio/ai-composer";
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
 import Skeleton from "#/components/ui/skeleton";
