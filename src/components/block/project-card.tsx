@@ -1,17 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { useEffect, useId, useRef, useState } from "react";
-import type { FormEvent, ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { ConfirmDialog, RenameDialog } from "#/components/block/project-dialogs";
 import Button from "#/components/ui/button";
-import Dialog, { AlertDialog } from "#/components/ui/dialog";
 import Icon from "#/components/ui/icon";
 import Menu from "#/components/ui/menu";
-import {
-  PROJECT_NAME_MAX_LENGTH,
-  useArchiveProject,
-  useDeleteProject,
-  useRenameProject
-} from "#/lib/projects";
+import { useArchiveProject, useDeleteProject, useRenameProject } from "#/lib/projects";
 
 export interface ProjectCardProps {
   id: string;
@@ -184,7 +178,6 @@ type ProjectAction = "rename" | "archive" | "delete";
 function ProjectActions({ id, name }: { id: string; name: string }) {
   const [action, setAction] = useState<ProjectAction | null>(null);
   const [draftName, setDraftName] = useState(name);
-  const inputId = useId();
 
   const rename = useRenameProject();
   const archive = useArchiveProject();
@@ -204,18 +197,6 @@ function ProjectActions({ id, name }: { id: string; name: string }) {
 
   function close() {
     setAction(null);
-  }
-
-  function submitRename(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const next = draftName.trim();
-
-    // The submit button is disabled in both cases; this is the keyboard path to
-    // the same submit, which a disabled button does not always intercept.
-    if (!next || rename.isPending) return;
-
-    rename.mutate({ id, name: next }, { onSuccess: close });
   }
 
   return (
@@ -268,44 +249,15 @@ function ProjectActions({ id, name }: { id: string; name: string }) {
         </Menu.Content>
       </Menu.Root>
 
-      {/* Dismissible, unlike the two below it: nothing has happened yet, and
-          the draft is thrown away either way. */}
-      <Dialog.Root
+      <RenameDialog
         open={action === "rename"}
-        onOpenChange={(isOpen) => {
-          if (!isOpen) close();
-        }}
-      >
-        <Dialog.Content>
-          <form onSubmit={submitRename}>
-            <Dialog.Title>Rename project</Dialog.Title>
-            <label htmlFor={inputId} className="mt-4 block text-sm text-neutral-400">
-              Name
-            </label>
-            <input
-              id={inputId}
-              value={draftName}
-              onChange={(event) => setDraftName(event.target.value)}
-              maxLength={PROJECT_NAME_MAX_LENGTH}
-              placeholder="Untitled project"
-              disabled={rename.isPending}
-              className="text-foreground mt-1.5 w-full rounded-[12px] border border-[rgba(218,220,224,0.1)] bg-[rgba(218,220,224,0.05)] px-3 py-2 text-sm outline-hidden transition placeholder:text-neutral-500 focus-visible:border-neutral-500 disabled:opacity-50"
-            />
-            <ActionError error={rename.error} />
-            <div className="mt-5 flex justify-end gap-2">
-              <Dialog.Close disabled={rename.isPending} render={<Button variant="ghost" />}>
-                Cancel
-              </Dialog.Close>
-              {/* `pending` rather than `disabled` while the rename is in flight:
-                  the button keeps focus and Base UI swallows the click anyway,
-                  so nothing submits twice. */}
-              <Button type="submit" pending={rename.isPending} disabled={draftName.trim() === ""}>
-                Rename
-              </Button>
-            </div>
-          </form>
-        </Dialog.Content>
-      </Dialog.Root>
+        onClose={close}
+        value={draftName}
+        onValueChange={setDraftName}
+        onSubmit={(next) => rename.mutate({ id, name: next }, { onSuccess: close })}
+        error={rename.error}
+        pending={rename.isPending}
+      />
 
       <ConfirmDialog
         open={action === "archive"}
@@ -330,77 +282,6 @@ function ProjectActions({ id, name }: { id: string; name: string }) {
         onConfirm={() => remove.mutate({ id }, { onSuccess: close })}
       />
     </>
-  );
-}
-
-interface ConfirmDialogProps {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  description: ReactNode;
-  confirmLabel: string;
-  /** Paints the confirm button red; for the one that destroys something. */
-  destructive?: boolean;
-  error: Error | null;
-  pending: boolean;
-  onConfirm: () => void;
-}
-
-/**
- * An alert dialog rather than a plain one, so the decision has to be taken or
- * declined — clicking away from it does nothing.
- */
-function ConfirmDialog({
-  open,
-  onClose,
-  title,
-  description,
-  confirmLabel,
-  destructive,
-  error,
-  pending,
-  onConfirm
-}: ConfirmDialogProps) {
-  return (
-    <AlertDialog.Root
-      open={open}
-      onOpenChange={(isOpen) => {
-        if (!isOpen) onClose();
-      }}
-    >
-      <AlertDialog.Content>
-        <AlertDialog.Title>{title}</AlertDialog.Title>
-        <AlertDialog.Description>{description}</AlertDialog.Description>
-        <ActionError error={error} />
-        <div className="mt-5 flex justify-end gap-2">
-          <AlertDialog.Close disabled={pending} render={<Button variant="ghost" />}>
-            Cancel
-          </AlertDialog.Close>
-          <Button
-            variant={destructive ? "danger" : "primary"}
-            pending={pending}
-            onClick={onConfirm}
-          >
-            {confirmLabel}
-          </Button>
-        </div>
-      </AlertDialog.Content>
-    </AlertDialog.Root>
-  );
-}
-
-/**
- * A failed server function can carry driver-level detail — a connection string,
- * a fragment of SQL — so only the development build shows the original message,
- * the same trade the projects route makes.
- */
-function ActionError({ error }: { error: Error | null }) {
-  if (!error) return null;
-
-  return (
-    <p role="alert" className="mt-3 text-sm text-red-400">
-      {import.meta.env.DEV ? error.message : "Something went wrong. Please try again."}
-    </p>
   );
 }
 
