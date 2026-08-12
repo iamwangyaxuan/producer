@@ -22,6 +22,29 @@ const itemClass = tv({
   }
 });
 
+/**
+ * A trigger keeps the press blur for as long as its menu is open.
+ *
+ * `active:blur-[1.5px]` — the press every button and menu row on this surface
+ * does — only lasts while the pointer is down, so a trigger snapped back to
+ * sharp the instant the menu it had just opened appeared: the effect ended
+ * exactly when the thing it caused showed up, and the open popup was left
+ * looking like it belonged to nothing. `data-popup-open` is the one signal Base
+ * UI holds for the whole time the menu is up.
+ *
+ * It lands here rather than in the button because it is the menu that owns this
+ * state, and because a trigger is not always a button — anything passed through
+ * `render` gets the same treatment without knowing about it.
+ */
+export function MenuTrigger({ className, ...props }: BaseMenu.Trigger.Props) {
+  return (
+    <BaseMenu.Trigger
+      {...props}
+      className={mergeClassName("data-popup-open:blur-[1.5px]", className)}
+    />
+  );
+}
+
 export interface MenuContentProps extends BaseMenu.Popup.Props {
   container?: BaseMenu.Portal.Props["container"];
   keepMounted?: boolean;
@@ -149,7 +172,7 @@ export function MenuSeparator({ className, ...props }: BaseMenu.Separator.Props)
 
 const Menu = {
   Root: BaseMenu.Root,
-  Trigger: BaseMenu.Trigger,
+  Trigger: MenuTrigger,
   Backdrop: BaseMenu.Backdrop,
   Content: MenuContent,
   Item: MenuItem,
