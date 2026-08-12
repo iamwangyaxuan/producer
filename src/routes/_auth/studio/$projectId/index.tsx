@@ -1,41 +1,33 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import {
-  addEdge,
   Background,
   BackgroundVariant,
   Panel,
   ReactFlow,
   ReactFlowProvider,
-  useEdgesState,
-  useNodesState,
+  useKeyPress,
   useReactFlow
 } from "@xyflow/react";
-import type { Connection, Edge, NodeChange } from "@xyflow/react";
-import { useRef, useState } from "react";
+import { useEffect, useMemo } from "react";
+import type { PointerEvent } from "react";
 
 import AIComposer from "#/components/block/studio/ai-composer";
 import type { ComposerSubmission } from "#/components/block/studio/ai-composer";
-import AlignmentGuides, {
-  alignmentFor,
-  resizeAlignmentFor,
-  spacingFor
-} from "#/components/block/studio/alignment-guides";
-import type { Guides } from "#/components/block/studio/alignment-guides";
-import { freePosition, tidyPositions } from "#/components/block/studio/canvas-placement";
-import {
-  DragModeContext,
-  GENERATION_NODE_TYPES,
-  isVisual,
-  nodeSize
-} from "#/components/block/studio/generation-node";
+import AlignmentGuides from "#/components/block/studio/alignment-guides";
+import { DragModeContext, GENERATION_NODE_TYPES } from "#/components/block/studio/generation-node";
 import type { GenerationNode } from "#/components/block/studio/generation-node";
+import PresenceAvatars from "#/components/block/studio/presence-avatars";
+import PresenceCursors from "#/components/block/studio/presence-cursors";
 import StudioToolbar from "#/components/block/studio/studio-toolbar";
-import { useDragMode } from "#/components/block/use-drag-mode";
+import { useCanvasCollab } from "#/components/block/studio/use-canvas-collab";
+import { useGenerations } from "#/components/block/studio/use-generations";
+import { useSnapGuides } from "#/components/block/studio/use-snap-guides";
+import { useViewportMemory } from "#/components/block/studio/use-viewport-memory";
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
+import { presenceColor } from "#/lib/canvas/presence";
 import { projectQueryOptions } from "#/lib/projects";
-import { requestGeneration } from "#/lib/sample-media";
 
 export const Route = createFileRoute("/_auth/studio/$projectId/")({
   component: RouteComponent
@@ -62,10 +54,6 @@ function RouteComponent() {
  */
 const DOT_SPACING = 16;
 
-const INITIAL_NODES: GenerationNode[] = [];
-
-const INITIAL_EDGES: Edge[] = [];
-
 function Studio() {
   const { projectId } = Route.useParams();
   const { session } = Route.useRouteContext();
@@ -90,241 +78,114 @@ function Studio() {
 
   const { screenToFlowPosition } = useReactFlow<GenerationNode>();
 
-  const [nodes, setNodes, onNodesChange] = useNodesState<GenerationNode>(INITIAL_NODES);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(INITIAL_EDGES);
-  const [guides, setGuides] = useState<Guides>({});
+  /**
+   * Whether the space bar is being held, which is what puts the canvas into
+   * its move-things-around mode: panning and node dragging both wait for it,
+   * so a stray drag cannot shove the work about. React Flow's own hook rather
+   * than a hand-rolled listener — it already ignores typing in inputs,
+   * prevents the page scroll, and lets go when the window loses focus.
+   */
+  const dragMode = useKeyPress("Space");
 
-  const dragMode = useDragMode();
+  /**
+   * The one thing the hook deliberately does not do: on a focused button it
+   * leaves the browser's default alone, so the space bar would *both* enter
+   * drag mode and — on release — press the button. On this canvas that pairing
+   * is never meant: someone who has just clicked "Tidy up" and holds space to
+   * move a node would rearrange everyone's board again on letting go. Space
+   * activates buttons on keyup, so dropping focus on keydown is enough.
+   */
+  useEffect(() => {
+    if (!dragMode) return;
 
-  /** One per request still in flight, so deleting a node can call off its work. */
-  const inFlight = useRef(new Map<string, AbortController>());
-  const created = useRef(0);
+    const active = document.activeElement;
 
-  function patch(id: string, data: Partial<GenerationNode["data"]>) {
-    setNodes((current) =>
-      current.map((node) => (node.id === id ? { ...node, data: { ...node.data, ...data } } : node))
-    );
-  }
+    if (active instanceof HTMLElement && (active.tagName === "BUTTON" || active.tagName === "A")) {
+      active.blur();
+    }
+  }, [dragMode]);
 
-  async function generate(submission: ComposerSubmission) {
-    const id = `generation-${created.current++}`;
+  /** Who this tab is, to everyone else on the canvas. */
+  const me = useMemo(
+    () => ({
+      id: session.user.id,
+      name: session.user.name,
+      image: session.user.image ?? null,
+      color: presenceColor(session.user.id)
+    }),
+    [session.user.id, session.user.name, session.user.image]
+  );
 
-    const data: GenerationNode["data"] = {
-      modality: submission.modality,
-      prompt: submission.text,
-      model: submission.model,
-      aspectRatio: submission.aspectRatio,
-      status: "pending"
-    };
+  const generations = useGenerations();
+  const collab = useCanvasCollab({
+    projectId,
+    user: me,
+    onNodesRemoved: generations.cancel,
+    isGenerating: generations.owns
+  });
+  const snap = useSnapGuides(collab.nodes, collab.applyNodesChange);
 
-    const size = nodeSize(data);
+  useViewportMemory(projectId);
+
+  function generate(submission: ComposerSubmission) {
     const centre = screenToFlowPosition({
       x: window.innerWidth / 2,
       y: window.innerHeight / 2
     });
 
-    setNodes((current) => [
-      ...current,
+    const id = collab.addGeneration(
       {
-        id,
-        type: "generation",
-        // Written on the node rather than left to CSS: these are what the resize
-        // controls change, and a node with no dimensions of its own has nothing
-        // for them to take hold of.
-        width: size.width,
-        height: size.height,
-        // Worked out inside the updater rather than before it: `current` is the
-        // only list guaranteed to hold nodes added a moment ago, and two
-        // submissions in quick succession would otherwise both be placed against
-        // the canvas as it stood before either of them existed.
-        position: freePosition(
-          { x: centre.x - size.width / 2, y: centre.y - size.height / 2 },
-          size,
-          current
-        ),
-        data
-      }
-    ]);
+        modality: submission.modality,
+        prompt: submission.text,
+        model: submission.model,
+        aspectRatio: submission.aspectRatio,
+        status: "pending",
+        generatedBy: collab.clientId ?? undefined
+      },
+      centre
+    );
 
-    const controller = new AbortController();
-    inFlight.current.set(id, controller);
-
-    try {
-      const src = await requestGeneration(submission, controller.signal);
-
-      patch(id, { src, status: "ready" });
-    } catch {
-      // A cancelled request belongs to a node that is already gone; marking it
-      // failed would be describing something nobody can see.
-      if (!controller.signal.aborted) patch(id, { status: "failed" });
-    } finally {
-      inFlight.current.delete(id);
-    }
+    if (id) void generations.start(id, submission, collab.patchNodeData);
   }
 
   /**
-   * A drag goes exactly where it is taken, unless it comes close enough to
-   * something worth meeting — then it is pulled the last few pixels and a guide
-   * is drawn to say why.
-   *
-   * Two things count as worth meeting, asked in that order. An edge lining up
-   * with a neighbour's is the more specific of the two, so it is offered first
-   * and keeps whichever axes it claims; the gap to a neighbour coming out equal
-   * to a gap already on the canvas is offered on the axes it left alone. In a row
-   * of nodes those are usually different axes — flush along one, evenly spaced
-   * along the other — so both answer at once rather than taking turns.
-   *
-   * Nothing else moves it. There is no grid to land on, which is also what makes
-   * the guides useful: on a quantised canvas a node is never a few pixels short
-   * of lining up, so the pull would have nothing to do and the guide would only
-   * ever appear once you had already arrived.
+   * The pointer is reported in flow coordinates so every other zoom level and
+   * camera position draws it in the right place. On the wrapper rather than a
+   * React Flow pane handler, because the pane goes quiet while a node is being
+   * dragged — exactly when everyone else most wants to see the cursor moving.
    */
-  function handleNodesChange(changes: NodeChange<GenerationNode>[]) {
-    if (handleResize(changes)) return;
-
-    const [change] = changes;
-
-    // Anything that is not one node being dragged goes through untouched: a
-    // selection, a nudge from the keyboard, several nodes at once. `dragging` is
-    // the tell — React Flow sets it on the changes a drag emits and leaves it
-    // off everything else.
-    if (
-      changes.length !== 1 ||
-      change.type !== "position" ||
-      !change.position ||
-      change.dragging === undefined
-    ) {
-      setGuides({});
-      onNodesChange(changes);
-
-      return;
-    }
-
-    const alignment = alignmentFor(change, nodes);
-    const spacing = spacingFor(change, nodes, alignment);
-
-    /*
-     * The guides belong to the drag and leave with it. The snap does not, and
-     * this is why the last change of a drag is corrected like all the others
-     * rather than waved through: React Flow works a drag out from the pointer
-     * alone and never hears about the corrections, so it signs off with one
-     * final change carrying the position it had in mind all along. Passed on as
-     * it stands, that change is the node springing back the few pixels it was
-     * just pulled — every guide shown during the drag, then quietly taken back
-     * on release.
-     */
-    setGuides(
-      change.dragging
-        ? {
-            vertical: alignment.vertical,
-            horizontal: alignment.horizontal,
-            spans: spacing.spans
-          }
-        : {}
-    );
-    onNodesChange([
-      {
-        ...change,
-        position: {
-          x: alignment.position.x ?? spacing.position.x ?? change.position.x,
-          y: alignment.position.y ?? spacing.position.y ?? change.position.y
-        }
-      }
-    ]);
-  }
-
-  /**
-   * The resize half of the same idea: an edge pulled close to a neighbour's is
-   * taken the rest of the way, and a guide is drawn to say which edge it met.
-   *
-   * A resize arrives as a pair rather than as one change — the new size always,
-   * and a new position as well whenever the corner being pulled is not the
-   * bottom-right one — so it is picked out and rewritten here instead of going
-   * through the single-change path above. Returns whether it took the changes.
-   */
-  function handleResize(changes: NodeChange<GenerationNode>[]) {
-    const resize = changes.find((change) => change.type === "dimensions" && change.resizing);
-
-    if (resize?.type !== "dimensions" || !resize.dimensions) return false;
-
-    const node = nodes.find((current) => current.id === resize.id);
-
-    if (!node) return false;
-
-    const moved = changes.find(
-      (change) => change.type === "position" && change.id === resize.id && change.position
-    );
-
-    const next = {
-      position: (moved?.type === "position" && moved.position) || node.position,
-      width: resize.dimensions.width,
-      height: resize.dimensions.height
-    };
-
-    const aligned = resizeAlignmentFor(node, next, nodes, isVisual(node.data));
-
-    const position = aligned.position ?? next.position;
-    const size = aligned.size ?? { width: next.width, height: next.height };
-
-    setGuides({ vertical: aligned.vertical, horizontal: aligned.horizontal });
-    onNodesChange(
-      changes.map((change) => {
-        // `type` is checked before `id` because not every kind of change has
-        // one — an added node carries the whole node instead.
-        if (change.type === "position" && change.id === resize.id) {
-          return { ...change, position };
-        }
-        if (change.type === "dimensions" && change.id === resize.id) {
-          return { ...change, dimensions: size };
-        }
-
-        return change;
-      })
-    );
-
-    return true;
-  }
-
-  function tidy() {
-    setNodes((current) => {
-      const layout = tidyPositions(current);
-
-      return current.map((node) => ({ ...node, position: layout.get(node.id) ?? node.position }));
-    });
-  }
-
-  function onConnect(connection: Connection) {
-    setEdges((current) => addEdge(connection, current));
+  function shareCursor(event: PointerEvent) {
+    collab.setCursor(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
   }
 
   return (
     // Above `ReactFlow`, so it reaches the nodes it renders: each one uses it to
     // decide whether hovering should offer to move it.
     <DragModeContext value={dragMode}>
-      <main className="h-svh">
+      <main
+        className="h-svh"
+        onPointerMove={shareCursor}
+        onPointerLeave={() => collab.setCursor(null)}
+      >
         <ReactFlow
           // Also what React Flow reads to swap in its own grab and grabbing
           // cursors, so the pointer follows the mode without being told twice.
           panOnDrag={dragMode}
           nodesDraggable={dragMode}
-          nodes={nodes}
-          edges={edges}
-          onNodesChange={handleNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          onNodesDelete={(deleted) => {
-            for (const node of deleted) {
-              inFlight.current.get(node.id)?.abort();
-              inFlight.current.delete(node.id);
-            }
-          }}
+          nodes={collab.nodes}
+          edges={collab.edges}
+          onNodesChange={snap.onNodesChange}
+          onEdgesChange={collab.applyEdgesChange}
+          onConnect={collab.connect}
           nodeTypes={GENERATION_NODE_TYPES}
           colorMode="dark"
           aria-label="Canvas"
         >
           <Background variant={BackgroundVariant.Dots} gap={DOT_SPACING} size={1} />
 
-          <AlignmentGuides {...guides} />
+          <AlignmentGuides {...snap.guides} />
+
+          <PresenceCursors peers={collab.peers} selfClientId={collab.clientId} />
 
           <Panel position="top-left" className="m-0 p-6">
             <StudioToolbar projectId={projectId} name={projectName}>
@@ -333,12 +194,17 @@ function Studio() {
                 It sits inside the strip rather than beside it because there is
                 only one top-left corner, and two panels claiming it would land
                 on top of each other. */}
-              {nodes.length > 1 ? (
-                <Button icon variant="ghost" size="md" aria-label="Tidy up" onClick={tidy}>
+              {collab.nodes.length > 1 ? (
+                <Button icon variant="ghost" size="md" aria-label="Tidy up" onClick={collab.tidy}>
                   <Icon name="grid_view" className="text-base" />
                 </Button>
               ) : null}
             </StudioToolbar>
+          </Panel>
+
+          {/* Who else is here, in the corner every design tool keeps it in. */}
+          <Panel position="top-right" className="m-0 p-6">
+            <PresenceAvatars peers={collab.peers} />
           </Panel>
 
           {/* Full-width but pointer-transparent, so the composer can sit centred
