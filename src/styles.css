@@ -1,4 +1,12 @@
 @import "tailwindcss";
+/**
+ * `layer(base)` rather than a bare import. React Flow ships its stylesheet
+ * unlayered, and an unlayered rule beats a layered one no matter which order
+ * they appear in — so without this every `className` on a panel, a control or a
+ * node would quietly lose to the library's own defaults, which is a cascade
+ * fight that gives no error and no clue.
+ */
+@import "@xyflow/react/dist/style.css" layer(base);
 
 :root {
   --font-sans: "Source Sans 3";
@@ -77,5 +85,34 @@
     @apply font-icon block h-[1em] leading-none font-normal tracking-normal whitespace-nowrap normal-case not-italic;
     font-feature-settings: "liga";
     direction: ltr;
+  }
+
+  /**
+   * Every colour React Flow paints is read as `var(--xy-x, var(--xy-x-default))`,
+   * and `colorMode="dark"` only rewrites the `-default` half. Setting the
+   * un-suffixed name is the seam the library leaves for a theme: it lands in
+   * front of the dark palette by fallback order rather than by specificity, so
+   * none of this depends on out-cascading a stylesheet we do not own.
+   *
+   * The canvas itself is transparent instead of a colour of its own — the black
+   * behind it is the same `body` background every other screen sits on, and one
+   * of them shifting by a few points against the other is exactly the seam a
+   * full-bleed canvas would put on show.
+   */
+  .react-flow {
+    --xy-background-color: transparent;
+    --xy-background-pattern-dots-color: rgba(218, 220, 224, 0.15);
+
+    --xy-edge-stroke: rgba(218, 220, 224, 0.35);
+    --xy-edge-stroke-selected: rgba(218, 220, 224, 0.7);
+    --xy-connectionline-stroke: rgba(218, 220, 224, 0.5);
+
+    --xy-handle-background-color: #dadce0;
+    --xy-handle-border-color: var(--color-background);
+
+    --xy-selection-background-color: rgba(218, 220, 224, 0.08);
+    --xy-selection-border: 1px dotted rgba(218, 220, 224, 0.4);
+
+    --xy-attribution-background-color: rgba(218, 220, 224, 0.08);
   }
 }
