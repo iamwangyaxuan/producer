@@ -1,0 +1,222 @@
+import type { XYPosition } from "@xyflow/react";
+
+import { nodeSize } from "#/components/block/generation-node";
+import type { GenerationNode } from "#/components/block/generation-node";
+
+export interface Size {
+  width: number;
+  height: number;
+}
+
+/** Space left between neighbours, so "free" does not come out meaning "touching". */
+const GUTTER = 32;
+
+/**
+ * How far out to look before giving up. Twenty-four rings of node-sized cells is
+ * a canvas nobody has filled by hand; the bound is here so a bug upstream cannot
+ * turn this into a loop that never ends.
+ */
+const MAX_RINGS = 24;
+
+interface Cell {
+  col: number;
+  row: number;
+}
+
+function overlaps(a: XYPosition, aSize: Size, b: XYPosition, bSize: Size) {
+  return (
+    a.x < b.x + bSize.width &&
+    a.x + aSize.width > b.x &&
+    a.y < b.y + bSize.height &&
+    a.y + aSize.height > b.y
+  );
+}
+
+/**
+ * Three places a size can come from, in order of how current they are: what the
+ * browser last measured, what a resize wrote onto the node, and — for a node
+ * added in this very tick, which has neither — what its ratio says it will be.
+ */
+export function sizeOf(node: GenerationNode): Size {
+  const measured = node.measured;
+
+  if (measured?.width && measured.height) return { width: measured.width, height: measured.height };
+  if (node.width && node.height) return { width: node.width, height: node.height };
+
+  return nodeSize(node.data);
+}
+
+/**
+ * Candidate slots, nearest ring first.
+ *
+ * Within a ring the order is the one a person filling a page would use: stay on
+ * the same row if you can, go down before you go up, and go right before you go
+ * left. Without that the first free slot is as likely to be up and to the left,
+ * which reads as the canvas throwing work backwards.
+ */
+function* cells(): Generator<Cell> {
+  yield { col: 0, row: 0 };
+
+  for (let ring = 1; ring <= MAX_RINGS; ring++) {
+    const ringCells: Cell[] = [];
+
+    for (let row = -ring; row <= ring; row++) {
+      for (let col = -ring; col <= ring; col++) {
+        if (Math.max(Math.abs(col), Math.abs(row)) === ring) ringCells.push({ col, row });
+      }
+    }
+
+    ringCells.sort(
+      (a, b) =>
+        Math.abs(a.row) - Math.abs(b.row) ||
+        b.row - a.row ||
+        Math.abs(a.col) - Math.abs(b.col) ||
+        b.col - a.col
+    );
+
+    yield* ringCells;
+  }
+}
+
+/**
+ * Every coordinate on one axis at which a new node of `length` would line up
+ * with an existing one of `extent` — sharing an edge, sharing a centre, or
+ * sitting directly alongside with a gutter between.
+ */
+function alignedTo(near: number, far: number, length: number) {
+  return [
+    near, // near edges flush
+    far - length, // far edges flush
+    (near + far - length) / 2, // centres
+    far + GUTTER, // alongside, after it
+    near - length - GUTTER // alongside, before it
+  ];
+}
+
+/** Bounded so a canvas of many nodes cannot turn this into a long search. */
+const MAX_CANDIDATES = 600;
+
+/**
+ * The nearest spot to `anchor` where a node of `size` sits clear of everything
+ * already on the canvas — and, wherever it can, lined up with it.
+ *
+ * The candidates are built from the edges of the nodes already there rather than
+ * from a lattice, because there is no lattice: nodes sit wherever they were
+ * dragged, aligned or resized to. Taking the coordinates off real neighbours is
+ * what makes a new node share an edge with one instead of landing a few pixels
+ * out from it, which is the kind of near-miss that has to be tidied by hand.
+ *
+ * The anchor's own coordinates are in the list too, so a clear spot right where
+ * the person is looking still wins on distance and nothing is moved to line up
+ * with something for the sake of it.
+ */
+export function freePosition(
+  anchor: XYPosition,
+  size: Size,
+  taken: readonly GenerationNode[]
+): XYPosition {
+  const occupied = taken.map((node) => ({ position: node.position, size: sizeOf(node) }));
+  const clear = (at: XYPosition) =>
+    !occupied.some((other) => overlaps(at, size, other.position, other.size));
+
+  // Somewhere clear to look at beats somewhere tidy: if the spot the person is
+  // already looking at is free, nothing is moved to line up with anything.
+  if (clear(anchor)) return { ...anchor };
+
+  const xs = new Set<number>();
+  const ys = new Set<number>();
+
+  for (const { position, size: other } of occupied) {
+    for (const x of alignedTo(position.x, position.x + other.width, size.width)) xs.add(x);
+    for (const y of alignedTo(position.y, position.y + other.height, size.height)) ys.add(y);
+  }
+
+  const candidates: XYPosition[] = [];
+
+  for (const x of [anchor.x, ...xs]) {
+    for (const y of [anchor.y, ...ys]) candidates.push({ x, y });
+  }
+
+  /**
+   * Distance from the anchor, less a credit for each axis that lines up.
+   *
+   * Distance alone is not enough: a spot three pixels off a neighbour's edge is
+   * nearer than the edge itself and would win, leaving the new node almost
+   * aligned — the near miss that has to be straightened by hand later. The
+   * credit is worth more than that kind of gap and far less than a real detour,
+   * so lining up wins the close calls and never drags a node across the canvas.
+   */
+  const ALIGNMENT_CREDIT = 24;
+
+  const score = ({ x, y }: XYPosition) =>
+    Math.hypot(x - anchor.x, y - anchor.y) -
+    (xs.has(x) ? ALIGNMENT_CREDIT : 0) -
+    (ys.has(y) ? ALIGNMENT_CREDIT : 0);
+
+  candidates.sort((a, b) => score(a) - score(b));
+
+  for (const candidate of candidates.slice(0, MAX_CANDIDATES)) {
+    if (clear(candidate)) return candidate;
+  }
+
+  // Nothing lined up and free, which takes a crowded canvas. Step out from the
+  // anchor in whole node-and-gutter strides until there is room.
+  for (const { col, row } of cells()) {
+    const candidate = {
+      x: anchor.x + col * (size.width + GUTTER),
+      y: anchor.y + row * (size.height + GUTTER)
+    };
+
+    if (clear(candidate)) return candidate;
+  }
+
+  return { ...anchor };
+}
+
+/**
+ * Where every node goes when the canvas is tidied.
+ *
+ * Columns rather than rows, filling the shortest column each time: node heights
+ * vary — a 9:16 clip is three times the height of a player — and laying them out
+ * in rows would leave a ragged band of empty canvas beside every short one.
+ *
+ * The arrangement is anchored to the top-left of what the nodes already cover,
+ * so tidying rearranges the work without also moving it somewhere the person has
+ * to go looking for it. Creation order is kept: the canvas is a record of what
+ * was made, and sorting by size would scramble that.
+ */
+export function tidyPositions(nodes: readonly GenerationNode[]): Map<string, XYPosition> {
+  const layout = new Map<string, XYPosition>();
+
+  if (nodes.length === 0) return layout;
+
+  const sized = nodes.map((node) => ({ id: node.id, position: node.position, ...sizeOf(node) }));
+
+  const anchor = {
+    x: Math.min(...sized.map((node) => node.position.x)),
+    y: Math.min(...sized.map((node) => node.position.y))
+  };
+
+  // Roughly square, because a canvas is panned in both directions and a single
+  // long column or row is the one shape that cannot be taken in at a glance.
+  const columns = Math.min(5, Math.max(1, Math.round(Math.sqrt(sized.length))));
+  const columnWidth = Math.max(...sized.map((node) => node.width));
+  const filled = Array.from({ length: columns }, () => 0);
+
+  for (const node of sized) {
+    let shortest = 0;
+
+    for (let column = 1; column < columns; column++) {
+      if (filled[column] < filled[shortest]) shortest = column;
+    }
+
+    layout.set(node.id, {
+      x: anchor.x + shortest * (columnWidth + GUTTER),
+      y: anchor.y + filled[shortest]
+    });
+
+    filled[shortest] += node.height + GUTTER;
+  }
+
+  return layout;
+}
