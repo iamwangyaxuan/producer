@@ -233,9 +233,17 @@ export const asset = pgTable(
     // Denormalized on purpose: the media-serving hot path authorizes with one
     // indexed lookup instead of a join through `project`, and the org barrier
     // keeps holding after a project is deleted.
+    //
+    // `restrict`, not `cascade`, for the same reason `projectId` is `set null`:
+    // a cascade would delete the rows while their objects stayed in the bucket,
+    // and with the rows go the only object keys anything could clean up by —
+    // the whole org's bytes, orphaned for good. Deleting an organization must
+    // therefore tombstone its assets first and let the sweep drain them; until
+    // it does, Postgres refuses, which is a loud failure rather than a silent
+    // and permanent one. Nothing in the app deletes an organization today.
     organizationId: uuid("organization_id")
       .notNull()
-      .references(() => organization.id, { onDelete: "cascade" }),
+      .references(() => organization.id, { onDelete: "restrict" }),
     // Nullable + set null: the row must outlive the project, because it is the
     // only record of the R2 object — cascading it away would strand bytes in
     // the bucket with nothing left to clean them up by.
@@ -249,6 +257,15 @@ export const asset = pgTable(
     /** User-facing failure reason; null unless status = 'failed'. */
     error: text("error"),
     objectKey: text("object_key").notNull().unique(),
+    /**
+     * What R2 answered with when the bytes were accepted, recorded so serving
+     * can tell the object apart from a later one at the same key. An upload's
+     * presigned URL stays usable for its whole (short) lifetime, including
+     * after completion, so without this a member could re-PUT different bytes
+     * behind a row that had already been measured and called ready. The
+     * serving route refuses anything whose ETag has moved.
+     */
+    etag: text("etag"),
     // Nullable while pending: an AI row is inserted before the provider has
     // answered, so what came back is only known when the row flips to ready.
     mimeType: text("mime_type"),
@@ -278,10 +295,14 @@ export const asset = pgTable(
     index("asset_organizationId_idx").on(table.organizationId),
     index("asset_projectId_createdAt_idx").on(table.projectId, table.createdAt),
     index("asset_createdBy_idx").on(table.createdBy),
-    // The orphan sweeper's index: tiny, because it only holds in-flight rows.
-    index("asset_status_pending_idx")
-      .on(table.createdAt)
-      .where(sql`${table.status} = 'pending'`),
+    // The sweeper's index, and it has to cover everything the sweep collects,
+    // not just in-flight rows: a tombstoned row waiting for its object to be
+    // deleted, and a `failed` one whose bytes may have landed anyway. Still
+    // tiny, because a healthy row is `ready` and undeleted, which this
+    // excludes.
+    index("asset_sweep_idx")
+      .on(table.updatedAt)
+      .where(sql`${table.deletedAt} is not null or ${table.status} <> 'ready'`),
     check("asset_source_check", sql`${table.source} in ('ai', 'upload')`),
     check("asset_kind_check", sql`${table.kind} in ('image', 'voice', 'music', 'video')`),
     check("asset_status_check", sql`${table.status} in ('pending', 'ready', 'failed')`),

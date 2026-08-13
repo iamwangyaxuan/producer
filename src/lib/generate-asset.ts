@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { getDB, schema } from "#/db";
 import { ASSET_KINDS } from "#/db/schema";
+import { ALLOWED_MIME } from "#/lib/asset-constraints";
 import { requireAssetAccess } from "#/server/asset-access";
 import { getProjectAccess } from "#/server/canvas-access";
 import { getProvider } from "#/server/generation/provider";
@@ -165,6 +166,17 @@ export const runGeneration = createServerFn({ method: "POST" })
         request.signal
       );
 
+      // What a provider says it sent is a claim, and this one is about to be
+      // stored and later served from the app's own origin. A type outside
+      // the kind's allowlist fails the generation rather than being kept:
+      // the serving route would have to refuse to render it anyway, and a
+      // row that cannot be shown is better named a failure than a result.
+      const contentType = result.contentType.split(";")[0].trim().toLowerCase();
+
+      if (!ALLOWED_MIME[asset.kind].includes(contentType)) {
+        throw new Error(`Provider answered with an unsupported ${asset.kind} type.`);
+      }
+
       // R2 refuses a stream it cannot size, so a stream rides through a
       // FixedLengthStream sized by the provider's declared length; a pipe
       // failure surfaces through the put, not as an unhandled rejection.
@@ -182,9 +194,9 @@ export const runGeneration = createServerFn({ method: "POST" })
 
       stored = {
         object: await env.MEDIA.put(asset.objectKey, body, {
-          httpMetadata: { contentType: result.contentType }
+          httpMetadata: { contentType }
         }),
-        contentType: result.contentType
+        contentType
       };
     } catch (error) {
       // Best effort, and guarded like the bind below: a row deleted while
@@ -211,7 +223,12 @@ export const runGeneration = createServerFn({ method: "POST" })
     // written is removed rather than left to outlive its tombstoned row.
     const bound = await db
       .update(schema.asset)
-      .set({ status: "ready", mimeType: stored.contentType, sizeBytes: stored.object.size })
+      .set({
+        status: "ready",
+        mimeType: stored.contentType,
+        sizeBytes: stored.object.size,
+        etag: stored.object.etag
+      })
       .where(
         and(
           eq(schema.asset.id, asset.id),
@@ -222,8 +239,11 @@ export const runGeneration = createServerFn({ method: "POST" })
       .returning({ id: schema.asset.id });
 
     if (bound.length === 0) {
-      await env.MEDIA.delete(asset.objectKey).catch(() => {});
-
+      // The bytes are left where they are. A miss means the row moved on
+      // without this call — deleted, or bound by a run that raced this one —
+      // and deleting the object here would, in the second case, destroy the
+      // very bytes the winner just published. Whatever is unreferenced is
+      // reachable from the row's own `objectKey`, which the sweep collects.
       throw new Error("That asset no longer exists.");
     }
 

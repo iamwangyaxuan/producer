@@ -1,3 +1,4 @@
+import { Toast } from "@base-ui/react/toast";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import {
@@ -128,6 +129,7 @@ function Studio() {
     [session.user.id, session.user.name, session.user.image]
   );
 
+  const toast = Toast.useToastManager();
   const generations = useGenerations();
   const uploads = useUploads();
   const collab = useCanvasCollab({
@@ -191,14 +193,27 @@ function Studio() {
    */
   async function ingestFiles(files: File[], origin: { x: number; y: number }) {
     let placed = 0;
+    const rejected: { name: string; reason: string }[] = [];
 
     for (const file of files) {
       const kind = kindFromMime(file.type);
 
       // The same rules the server would answer 400/413 with, applied before a
       // request exists to refuse: a file of the wrong type or size never
-      // leaves the machine.
-      if (!kind || file.size > MAX_BYTES[kind]) continue;
+      // leaves the machine. Refusals are collected rather than dropped —
+      // a file that simply vanishes on landing reads as a broken canvas.
+      if (!kind) {
+        rejected.push({ name: file.name, reason: "unsupported type" });
+        continue;
+      }
+
+      if (file.size > MAX_BYTES[kind]) {
+        rejected.push({
+          name: file.name,
+          reason: `over the ${Math.round(MAX_BYTES[kind] / 1_000_000)} MB limit for ${kind}`
+        });
+        continue;
+      }
 
       const aspectRatio =
         kind === "image" ? await imageRatio(file) : kind === "video" ? "16:9" : undefined;
@@ -223,6 +238,22 @@ function Studio() {
       placed += 1;
 
       if (id) void uploads.start(id, projectId, file, kind, collab.patchNodeData);
+    }
+
+    // One notice for the batch: dropping a folder of mixed files should not
+    // put a card on screen per stray.
+    if (rejected.length === 1) {
+      toast.add({
+        type: "error",
+        title: `${rejected[0].name} was not added`,
+        description: `It is ${rejected[0].reason}.`
+      });
+    } else if (rejected.length > 1) {
+      toast.add({
+        type: "error",
+        title: `${rejected.length} files were not added`,
+        description: rejected.map((entry) => `${entry.name} — ${entry.reason}`).join("; ")
+      });
     }
   }
 

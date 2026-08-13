@@ -43,19 +43,28 @@ export const Route = createFileRoute("/api/assets/$assetId/complete")({
           return Response.json({ error: "The upload has not arrived." }, { status: 400 });
         }
 
+        // Belt to the signature's braces: the signed Content-Length already
+        // stops a longer body reaching the bucket, and this catches anything
+        // that got past it. The row is left `failed` rather than deleted, so
+        // the sweep still knows the key if the object delete below is lost.
         if (head.size > MAX_BYTES[asset.kind]) {
-          await env.MEDIA.delete(asset.objectKey);
           await getDB()
             .update(schema.asset)
             .set({ status: "failed", error: "File is too large." })
             .where(eq(schema.asset.id, asset.id));
+          await env.MEDIA.delete(asset.objectKey).catch(() => {});
 
           return Response.json({ error: "File is too large." }, { status: 413 });
         }
 
+        // The ETag is recorded, not just the size: the presigned URL outlives
+        // this call, so the bytes behind the key can still be replaced. The
+        // serving route compares what it finds against this and refuses a
+        // stranger, which is what makes "a ready asset is immutable" true
+        // rather than merely intended.
         await getDB()
           .update(schema.asset)
-          .set({ status: "ready", sizeBytes: head.size })
+          .set({ status: "ready", sizeBytes: head.size, etag: head.etag })
           .where(eq(schema.asset.id, asset.id));
 
         return Response.json({

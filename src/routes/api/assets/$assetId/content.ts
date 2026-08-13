@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { env } from "cloudflare:workers";
 
+import { ALLOWED_MIME } from "#/lib/asset-constraints";
 import { requireAssetAccess } from "#/server/asset-access";
 import type { AssetRow } from "#/server/asset-access";
 
@@ -19,6 +20,53 @@ import type { AssetRow } from "#/server/asset-access";
  * revalidation is a cheap 304 that still runs the auth check.
  */
 const CACHE_CONTROL = "private, max-age=3600";
+
+/**
+ * The conditions R2 may answer for us: the two that ask "has this changed,
+ * and may I keep what I have". Their failure mode is a 304, which is what R2
+ * expresses by returning a bodiless object.
+ */
+function revalidationConditions(headers: Headers) {
+  const delegated = new Headers();
+  const ifNoneMatch = headers.get("if-none-match");
+  const ifModifiedSince = headers.get("if-modified-since");
+
+  if (ifNoneMatch) delegated.set("if-none-match", ifNoneMatch);
+  if (ifModifiedSince) delegated.set("if-modified-since", ifModifiedSince);
+
+  return delegated;
+}
+
+/**
+ * The conditions whose failure owes a 412 — "only act if the thing is still
+ * as I last saw it". Evaluated here because R2 reports every failed condition
+ * identically, and answering an unmet `If-Match` with a 304 would tell a
+ * client its stale copy is current.
+ *
+ * ETag comparison is strong: these preconditions are about acting on an exact
+ * representation, and a weak match is not a guarantee of one.
+ */
+function failedPrecondition(headers: Headers, object: R2Object) {
+  const ifMatch = headers.get("if-match");
+
+  if (ifMatch) {
+    const tags = ifMatch.split(",").map((tag) => tag.trim());
+
+    if (!tags.includes("*") && !tags.includes(object.httpEtag)) return true;
+  }
+
+  const ifUnmodifiedSince = headers.get("if-unmodified-since");
+
+  if (ifUnmodifiedSince) {
+    const limit = Date.parse(ifUnmodifiedSince);
+
+    // An unparseable date is no condition at all, per RFC 9110. The second of
+    // slack absorbs the sub-second precision HTTP dates do not carry.
+    if (!Number.isNaN(limit) && object.uploaded.getTime() > limit + 999) return true;
+  }
+
+  return false;
+}
 
 /**
  * What was actually served, from R2's three ways of answering a range ask —
@@ -45,16 +93,34 @@ function resolveRange(range: R2Range, size: number): { offset: number; length: n
   return { offset: from, length: length ?? size - from };
 }
 
+/**
+ * A type is only served as itself if it is one this app accepts for that
+ * kind. Rows predate their allowlist in two ways — a generation records
+ * whatever the provider's `Content-Type` said, and the lists may tighten —
+ * so the check is made here at the sink rather than trusted from the row. A
+ * stranger is served as an opaque download instead of being rendered inline,
+ * which is the difference between a file and a script on this origin.
+ */
+function servableType(asset: AssetRow) {
+  const declared = asset.mimeType?.split(";")[0].trim().toLowerCase();
+
+  if (declared && ALLOWED_MIME[asset.kind].includes(declared)) return declared;
+
+  return null;
+}
+
 function baseHeaders(asset: AssetRow, etag: string) {
+  const type = servableType(asset);
+
   return new Headers({
     // The DB row is canonical — never R2 metadata, never sniffing, and
     // `nosniff` because the type was an upload-time claim.
-    "Content-Type": asset.mimeType ?? "application/octet-stream",
+    "Content-Type": type ?? "application/octet-stream",
     ETag: etag,
     "Accept-Ranges": "bytes",
     "Cache-Control": CACHE_CONTROL,
     "X-Content-Type-Options": "nosniff",
-    "Content-Disposition": "inline"
+    "Content-Disposition": type ? "inline" : "attachment"
   });
 }
 
@@ -66,7 +132,9 @@ function baseHeaders(asset: AssetRow, etag: string) {
 function withDisposition(headers: Headers, request: Request, asset: AssetRow) {
   const wantsDownload = new URL(request.url).searchParams.has("download");
 
-  if (!wantsDownload) return headers;
+  // A type this app will not render inline is already an attachment; naming
+  // the file is still worth doing.
+  if (!wantsDownload && headers.get("Content-Disposition") === "inline") return headers;
 
   const name = asset.filename ?? `${asset.kind}-${asset.id}`;
   const ascii = name.replace(/[^\x20-\x7e]/gu, "_").replaceAll('"', "'");
@@ -101,9 +169,14 @@ export const Route = createFileRoute("/api/assets/$assetId/content")({
           // The header set is only offered as a range when it actually holds
           // one — offered unconditionally, a plain GET comes back wearing a
           // vacuous range and would be served as a 206.
+          //
+          // Only the cache-revalidation conditions are delegated. R2 answers
+          // any failed condition the same way — metadata, no body — which
+          // reads as a 304, but a failed `If-Match` owes a 412; those are
+          // evaluated below instead.
           object = await env.MEDIA.get(asset.objectKey, {
             range: request.headers.has("range") ? request.headers : undefined,
-            onlyIf: request.headers
+            onlyIf: revalidationConditions(request.headers)
           });
         } catch {
           return new Response(null, {
@@ -120,10 +193,25 @@ export const Route = createFileRoute("/api/assets/$assetId/content")({
           return new Response("Not found", { status: 404 });
         }
 
+        // The bytes are only this asset's if they are the ones it was
+        // measured with. An upload's presigned URL stays usable after
+        // completion, so a moved ETag means something replaced the object
+        // behind a row that had already been checked — served, it would hand
+        // teammates content nothing ever validated.
+        if (asset.etag && object.etag !== asset.etag) {
+          console.error(`asset ${asset.id} object ${asset.objectKey} changed under a ready row`);
+
+          return new Response("Not found", { status: 404 });
+        }
+
         const headers = withDisposition(baseHeaders(asset, object.httpEtag), request, asset);
 
-        // `onlyIf` matched: R2 answers with metadata but no body, which is
-        // exactly a 304.
+        const precondition = failedPrecondition(request.headers, object);
+
+        if (precondition) return new Response(null, { status: 412, headers });
+
+        // A delegated condition matched: R2 answers with metadata but no
+        // body, which is exactly a 304.
         if (!("body" in object)) {
           return new Response(null, { status: 304, headers });
         }

@@ -89,7 +89,7 @@ export const Route = createFileRoute("/api/assets/")({
           createdBy: access.userId
         });
 
-        const uploadUrl = await presignUploadUrl(objectKey, mimeType);
+        const uploadUrl = await presignUploadUrl(objectKey, mimeType, sizeBytes);
 
         return Response.json({ assetId, uploadUrl }, { status: 201 });
       }

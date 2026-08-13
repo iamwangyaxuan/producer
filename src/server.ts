@@ -1,6 +1,7 @@
 import handler from "@tanstack/react-start/server-entry";
 import { routePartykitRequest } from "partyserver";
 
+import { sweepAssets } from "#/server/asset-sweep";
 import { canAccessProjectCanvas } from "#/server/canvas-access";
 
 /**
@@ -40,5 +41,31 @@ export default {
     });
 
     return routed ?? handler.fetch(request);
+  },
+
+  /**
+   * The asset layer's collector, on the cron in `wrangler.jsonc`.
+   *
+   * Every write path there records the row before the bytes and tombstones
+   * the row before deleting them, so the bucket can never hold an object
+   * nothing names — at the price of rows that outlive their usefulness and
+   * objects waiting to be collected. This is the other end of that bargain,
+   * and without it the guarantee is only half kept: soft-deleted assets keep
+   * their bytes forever, and an upload that was started and abandoned is
+   * storage nobody can see or reclaim.
+   */
+  async scheduled(_controller, _env, ctx) {
+    ctx.waitUntil(
+      sweepAssets().then(
+        ({ collected, failures }) => {
+          if (collected > 0 || failures > 0) {
+            console.log(`sweep: collected ${collected} asset(s), ${failures} failure(s)`);
+          }
+        },
+        // A sweep that throws is a sweep that runs again in an hour; what it
+        // must not do is take the invocation down silently.
+        (error: unknown) => console.error("sweep failed", error)
+      )
+    );
   }
 } satisfies ExportedHandler<Env>;

@@ -343,6 +343,15 @@ function VideoBody({ data }: { data: GenerationNodeData }) {
   useEffect(() => {
     if (!src) return;
 
+    // A new source is a new attempt: without this a node that failed once
+    // stays failed after its src is patched, because `broken` has no other
+    // way back.
+    setBroken(false);
+    setRevealed(false);
+    setPlaying(false);
+    setElapsed(0);
+    setTotal(0);
+
     let player: Player | null = null;
     let cancelled = false;
 
@@ -383,6 +392,12 @@ function VideoBody({ data }: { data: GenerationNodeData }) {
       player.on("error", () => setBroken(true));
 
       playerRef.current = player;
+    }).catch(() => {
+      // The chunk did not load — offline, or a deploy that moved it. Without
+      // this the node would sit on its skeleton forever, waiting for a player
+      // that is never coming; the failure state at least says so and the
+      // toolbar's download still works.
+      if (!cancelled) setBroken(true);
     });
 
     return () => {
@@ -426,10 +441,20 @@ function VideoBody({ data }: { data: GenerationNodeData }) {
 
       {failed ? <Failure /> : null}
 
+      {/* The host stays mounted through a failure, hidden under the notice
+          rather than pulled out from under the player: unmounting it would
+          leave video.js holding an element no longer in the document, with
+          nothing to dispose it until the node itself goes. Disposal belongs
+          to the effect's cleanup, which owns the player. */}
+      {src ? (
+        <div
+          ref={host}
+          className={cn("absolute inset-0", failed && "invisible", revealClass(revealed))}
+        />
+      ) : null}
+
       {src && !failed ? (
         <>
-          <div ref={host} className={cn("absolute inset-0", revealClass(revealed))} />
-
           <div
             className={cn(
               // The scrim is what keeps white controls legible over bright
@@ -608,27 +633,36 @@ function SoundBody({ data }: { data: GenerationNodeData }) {
 }
 
 /**
- * What a blob says it is, turned into what the file should be called. Only the
- * types the sample library actually answers with are in here; anything else
- * falls back to the extension the URL already carried.
+ * What a blob says it is, turned into what the file should be called. Every
+ * type the upload allowlist accepts is here, plus what the sample library
+ * answers with; anything else falls back to the extension the URL carried.
  */
 const EXTENSIONS: Record<string, string> = {
   "image/jpeg": "jpg",
   "image/png": "png",
   "image/webp": "webp",
+  "image/gif": "gif",
+  "image/avif": "avif",
   "video/mp4": "mp4",
   "video/webm": "webm",
+  "video/quicktime": "mov",
   "audio/mpeg": "mp3",
   "audio/mp4": "m4a",
-  "audio/wav": "wav"
+  "audio/wav": "wav",
+  "audio/webm": "weba",
+  "audio/ogg": "ogg",
+  "audio/flac": "flac"
 };
 
 /**
- * The prompt, made safe to write to a disk.
+ * What the result should be called on disk.
  *
- * Only the characters a file system actually refuses are stripped, so a prompt
- * written in Chinese or Japanese still names its own file — running it through
- * an ASCII filter would turn every one of them into the same empty string.
+ * An uploaded file already has a name — `prompt` is where it was put — and it
+ * arrived with an extension of its own, so it is passed through untouched
+ * rather than having a second one appended to it. Only the characters a file
+ * system actually refuses are stripped either way, so a prompt written in
+ * Chinese or Japanese still names its own file; an ASCII filter would turn
+ * every one of them into the same empty string.
  */
 function fileName(data: GenerationNodeData, url: string, type: string) {
   const stem =
@@ -638,6 +672,11 @@ function fileName(data: GenerationNodeData, url: string, type: string) {
       .replace(/\s+/g, "-")
       .slice(0, 60) || data.modality;
 
+  if (data.source === "upload") return stem;
+
+  // The serving URL carries no extension, so the blob's own type is what
+  // names these — the pattern only finds one on the third-party URLs older
+  // results still hold.
   const fromUrl = /\.([a-z0-9]{2,4})(?:$|\?)/i.exec(url)?.[1];
 
   return `${stem}.${fromUrl ?? EXTENSIONS[type] ?? "bin"}`;
