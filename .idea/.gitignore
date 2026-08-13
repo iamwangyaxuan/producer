@@ -8,3 +8,5 @@
 # Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
+# 只映射到被忽略的 .claude/,对别人没有意义
+/jsonSchemas.xml
