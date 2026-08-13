@@ -50,6 +50,29 @@ export const DragModeContext = createContext(false);
 export const NODE_WIDTH = 320;
 
 /**
+ * Out of the way until the pointer is on the node — and, the half that had been
+ * missing, out of the way of the pointer too.
+ *
+ * A transparent control still takes the press. On the toolbar that was a bite
+ * out of the top-right corner of every node nobody was pointing at; on a handle
+ * it is far worse, because a handle does not shrink with the board — see
+ * {@link HANDLE_SIZE} — so at a fifth zoom its box is a hundred and forty canvas
+ * pixels, reaching seventy past the corner it belongs to and well into whatever
+ * node sits next to it. Tying `pointer-events` to the same hover the opacity
+ * already answers to means a control nobody can see is a control nothing has to
+ * get past.
+ *
+ * A coarse pointer keeps its own — there is no hover there to earn it with, and
+ * a canvas nothing can be resized on is worse than one where the handles are
+ * only felt for.
+ */
+const REVEAL_ON_HOVER = [
+  "pointer-events-none opacity-0 transition-opacity duration-150",
+  "group-hover:pointer-events-auto group-hover:opacity-100",
+  "pointer-coarse:pointer-events-auto"
+].join(" ");
+
+/**
  * Sound has no shape of its own; a player is as tall as a player needs to be.
  *
  * Two rows tall rather than one, and the second row is not decoration. The
@@ -478,7 +501,11 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
          * node; anything inset less than that overlaps it, and whichever of the
          * two paints last takes the press.
          */
-        className="absolute top-4 right-4 flex items-center gap-0.5 rounded-xl border border-[rgba(218,220,224,0.12)] bg-[rgba(22,23,24,0.5)] p-1 opacity-0 shadow-[0_4px_16px_rgba(0,0,0,0.4)] backdrop-blur-xl backdrop-saturate-150 transition-opacity duration-150 group-hover:opacity-100 focus-within:opacity-100 pointer-coarse:opacity-100"
+        className={cn(
+          "absolute top-4 right-4 flex items-center gap-0.5 rounded-xl border border-[rgba(218,220,224,0.12)] bg-[rgba(22,23,24,0.5)] p-1 shadow-[0_4px_16px_rgba(0,0,0,0.4)] backdrop-blur-xl backdrop-saturate-150",
+          REVEAL_ON_HOVER,
+          "focus-within:pointer-events-auto focus-within:opacity-100 pointer-coarse:opacity-100"
+        )}
         // The toolbar is a control, not something to take hold of: without this
         // a press on either button would start dragging the node out from under
         // it while the space bar is down.
@@ -547,27 +574,81 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
  * One path serves all four: a quarter turn at a time walks it round.
  */
 const CORNERS = [
-  { position: "bottom-right", turn: "" },
-  { position: "bottom-left", turn: "rotate-90" },
-  { position: "top-left", turn: "rotate-180" },
-  { position: "top-right", turn: "-rotate-90" }
-] as const satisfies readonly { position: ControlPosition; turn: string }[];
+  {
+    position: "bottom-right",
+    turn: "",
+    // The node lies up and to the left of this corner, so that quadrant is the
+    // one to give back.
+    clip: "polygon(50% 0, 100% 0, 100% 100%, 0 100%, 0 50%, 50% 50%)"
+  },
+  {
+    position: "bottom-left",
+    turn: "rotate-90",
+    clip: "polygon(0 0, 50% 0, 50% 50%, 100% 50%, 100% 100%, 0 100%)"
+  },
+  {
+    position: "top-left",
+    turn: "rotate-180",
+    clip: "polygon(0 0, 100% 0, 100% 50%, 50% 50%, 50% 100%, 0 100%)"
+  },
+  {
+    position: "top-right",
+    turn: "-rotate-90",
+    clip: "polygon(0 0, 100% 0, 100% 100%, 50% 100%, 50% 50%, 0 50%)"
+  }
+] as const satisfies readonly { position: ControlPosition; turn: string; clip: string }[];
 
 /**
  * A player's height is pinned, so it gets two edge handles instead of four
  * corners. React Flow centres these the same way — `left: 0` or `left: 100%`,
  * halfway down — so the same 28×28 box works, and the cursor it hands out for
  * them is already the sideways one.
+ *
+ * The bar is offset to the outer half rather than sitting on the edge, because
+ * the inner half is no longer a place a press lands: see {@link HANDLE_SIZE}.
+ * A mark centred on a line where only one side of it answers is a mark that is
+ * wrong half the time.
  */
-const SIDES = ["left", "right"] as const satisfies readonly ControlPosition[];
+const SIDES = [
+  { position: "left", clip: "inset(0 50% 0 0)", bar: "left-1/4" },
+  { position: "right", clip: "inset(0 0 0 50%)", bar: "left-3/4" }
+] as const satisfies readonly { position: ControlPosition; clip: string; bar: string }[];
+
+/**
+ * How big a handle is on screen — and, because React Flow keeps it that size, at
+ * every zoom level rather than only at 1:1.
+ *
+ * That last part is not ours and is not optional: `NodeResizeControl` ships with
+ * `autoScale` on, and it scales a handle by `max(1 / zoom, 1)`. Zoom out and the
+ * box grows in canvas pixels to hold its ground on screen. It is the right
+ * instinct — a handle that shrank with the picture could not be taken hold of —
+ * but React Flow also centres a control *on* the edge it belongs to, so half of
+ * that growing box hangs over the inside of the node, and the box paints after
+ * everything else in it.
+ *
+ * Which is the bug this file was opened for. At half zoom the left handle
+ * reaches twenty-eight canvas pixels in; a player's play button starts at twelve
+ * and is twenty-four wide, so two thirds of it is under the handle — and every
+ * point of it, centre included, answers `ew-resize` instead of playing. By a
+ * quarter zoom the reach is fifty-six and the button is gone entirely. The
+ * corner handles did the same to a video's own transport controls.
+ *
+ * So each control gives its inner half back, by clip path — which governs
+ * hit-testing as well as paint. What is left is the half hanging off the node,
+ * where there is nothing to be in front of, and the mark drawn on it was already
+ * living there: the corner arc is swung from a centre inside the node, clears
+ * the corner by four pixels, and never crosses into the quadrant being clipped.
+ * Nothing about how a handle looks changes — only where a press on it counts.
+ */
+const HANDLE_SIZE = 28;
 
 function ResizeHandles({ visual }: { visual: boolean }) {
   // Inline rather than through `className`: React Flow styles its own handle
   // with two classes, which outranks a utility class, and what is wanted here is
   // not a small square with a border but nothing at all behind the mark.
   const box = {
-    width: 28,
-    height: 28,
+    width: HANDLE_SIZE,
+    height: HANDLE_SIZE,
     background: "transparent",
     border: "none",
     borderRadius: 0
@@ -583,23 +664,27 @@ function ResizeHandles({ visual }: { visual: boolean }) {
     maxHeight: visual ? 1280 : SOUND_HEIGHT
   };
 
-  const reveal = "opacity-0 transition-opacity duration-150 group-hover:opacity-100";
-
   if (!visual) {
     return (
       <>
-        {SIDES.map((position) => (
+        {SIDES.map(({ position, clip, bar }) => (
           <NodeResizeControl
             key={position}
             position={position}
             {...bounds}
-            style={box}
-            className={cn(reveal, "flex items-center justify-center")}
+            style={{ ...box, clipPath: clip }}
+            className={REVEAL_ON_HOVER}
           >
             {/* A bar rather than an arc. Four corner arcs promise a box that can
                 be pulled in both directions, and this one cannot: it offers the
                 one axis it can actually move on. */}
-            <span aria-hidden className="h-6 w-[3px] rounded-full bg-[rgba(218,220,224,0.9)]" />
+            <span
+              aria-hidden
+              className={cn(
+                "absolute top-1/2 h-6 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[rgba(218,220,224,0.9)]",
+                bar
+              )}
+            />
           </NodeResizeControl>
         ))}
       </>
@@ -608,14 +693,14 @@ function ResizeHandles({ visual }: { visual: boolean }) {
 
   return (
     <>
-      {CORNERS.map(({ position, turn }) => (
+      {CORNERS.map(({ position, turn, clip }) => (
         <NodeResizeControl
           key={position}
           position={position}
           keepAspectRatio
           {...bounds}
-          style={box}
-          className={reveal}
+          style={{ ...box, clipPath: clip }}
+          className={REVEAL_ON_HOVER}
         >
           <svg viewBox="0 0 28 28" aria-hidden className={cn("size-full", turn)}>
             <path
