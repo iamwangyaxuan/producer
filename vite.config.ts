@@ -23,7 +23,10 @@ const config = defineConfig({
     babel({ presets: [reactCompilerPreset()] })
   ],
   server: {
-    port: 3000
+    // Still 3000 by default. Reading `PORT` first is what lets a second dev
+    // server run against this checkout — two sessions on the same folder
+    // otherwise collide on the port and the second one simply never starts.
+    port: Number(process.env.PORT) || 3000
   }
 });
 
