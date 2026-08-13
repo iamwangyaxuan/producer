@@ -1,5 +1,18 @@
 import { relations, sql } from "drizzle-orm";
-import { boolean, index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import {
+  bigint,
+  boolean,
+  check,
+  doublePrecision,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  primaryKey,
+  text,
+  timestamp,
+  uuid
+} from "drizzle-orm/pg-core";
 
 const generate_id_fun = "uuidv7()";
 
@@ -180,6 +193,132 @@ export const project = pgTable(
   ]
 );
 
+/**
+ * Provider-shaped request parameters, stored verbatim. Vocabularies differ per
+ * model ("1K" vs "1080p", ratio lists, duration sets), so these are display /
+ * re-run data, not relational data. Measured output facts (width, height,
+ * durationSeconds) live in real columns instead.
+ */
+export interface GenerationParams {
+  resolution?: string;
+  aspectRatio?: string;
+  /** Requested seconds — the measured length goes in `durationSeconds`. */
+  duration?: number;
+  seed?: number;
+  [key: string]: unknown;
+}
+
+export const ASSET_SOURCES = ["ai", "upload"] as const;
+export const ASSET_KINDS = ["image", "voice", "music", "video"] as const;
+export const ASSET_STATUSES = ["pending", "ready", "failed"] as const;
+
+export type AssetSource = (typeof ASSET_SOURCES)[number];
+export type AssetKind = (typeof ASSET_KINDS)[number];
+export type AssetStatus = (typeof ASSET_STATUSES)[number];
+
+/**
+ * One row per stored media file — AI generations and user uploads share the
+ * table because they share everything that matters: the R2 object key
+ * contract, the org-scoped authorization path, the serving endpoint, and the
+ * reference graph (an uploaded image can feed a generation).
+ *
+ * The row is always inserted before any byte reaches R2, with `objectKey`
+ * already final, so the bucket can never hold an object the database has no
+ * record of — every possible orphan is discoverable from here.
+ */
+export const asset = pgTable(
+  "asset",
+  {
+    id: uuid("id").primaryKey().default(sql.raw(generate_id_fun)),
+    // Denormalized on purpose: the media-serving hot path authorizes with one
+    // indexed lookup instead of a join through `project`, and the org barrier
+    // keeps holding after a project is deleted.
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    // Nullable + set null: the row must outlive the project, because it is the
+    // only record of the R2 object — cascading it away would strand bytes in
+    // the bucket with nothing left to clean them up by.
+    projectId: uuid("project_id").references(() => project.id, { onDelete: "set null" }),
+    source: text("source").$type<AssetSource>().notNull(),
+    kind: text("kind").$type<AssetKind>().notNull(),
+    // One in-flight value for both sources — whether a `pending` row is an
+    // upload awaiting bytes or a generation awaiting a provider is already
+    // said by `source`; a second column saying it again would drift.
+    status: text("status").$type<AssetStatus>().default("pending").notNull(),
+    /** User-facing failure reason; null unless status = 'failed'. */
+    error: text("error"),
+    objectKey: text("object_key").notNull().unique(),
+    // Nullable while pending: an AI row is inserted before the provider has
+    // answered, so what came back is only known when the row flips to ready.
+    mimeType: text("mime_type"),
+    sizeBytes: bigint("size_bytes", { mode: "number" }),
+    /** Original filename as uploaded, display-only; null for AI assets. */
+    filename: text("filename"),
+    // Measured output facts, queryable across providers — unlike the request
+    // parameters in `params`, whose vocabulary each provider owns.
+    width: integer("width"),
+    height: integer("height"),
+    durationSeconds: doublePrecision("duration_seconds"),
+    prompt: text("prompt"),
+    model: text("model"),
+    params: jsonb("params").$type<GenerationParams>(),
+    createdBy: uuid("created_by").references(() => user.id, { onDelete: "set null" }),
+    // Soft delete: serving and listing hide the asset immediately; a later
+    // sweep deletes the R2 object and only then hard-deletes the row, so the
+    // provenance graph of generations that referenced it survives until purge.
+    deletedAt: tstz("deleted_at"),
+    createdAt: tstz("created_at").defaultNow().notNull(),
+    updatedAt: tstz("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull()
+  },
+  (table) => [
+    index("asset_organizationId_idx").on(table.organizationId),
+    index("asset_projectId_createdAt_idx").on(table.projectId, table.createdAt),
+    index("asset_createdBy_idx").on(table.createdBy),
+    // The orphan sweeper's index: tiny, because it only holds in-flight rows.
+    index("asset_status_pending_idx")
+      .on(table.createdAt)
+      .where(sql`${table.status} = 'pending'`),
+    check("asset_source_check", sql`${table.source} in ('ai', 'upload')`),
+    check("asset_kind_check", sql`${table.kind} in ('image', 'voice', 'music', 'video')`),
+    check("asset_status_check", sql`${table.status} in ('pending', 'ready', 'failed')`),
+    // An AI asset without a prompt or model is a bug caught at write time.
+    check(
+      "asset_ai_fields_check",
+      sql`${table.source} <> 'ai' or (${table.prompt} is not null and ${table.model} is not null)`
+    )
+  ]
+);
+
+/**
+ * Which assets a generation was fed as inputs. A junction table rather than an
+ * id array so the links are real foreign keys, the reverse question — which
+ * generations used this file — is an indexed lookup, and each edge can say
+ * what the input was for. The composite key doubles as the one-input-per-slot
+ * rule and permits the same asset in two roles.
+ */
+export const assetReference = pgTable(
+  "asset_reference",
+  {
+    assetId: uuid("asset_id")
+      .notNull()
+      .references(() => asset.id, { onDelete: "cascade" }),
+    referencedAssetId: uuid("referenced_asset_id")
+      .notNull()
+      .references(() => asset.id, { onDelete: "cascade" }),
+    /** Slot the input filled, e.g. 'source_image', 'style_reference'. */
+    role: text("role"),
+    position: integer("position").default(0).notNull()
+  },
+  (table) => [
+    primaryKey({ columns: [table.assetId, table.position] }),
+    index("asset_reference_referencedAssetId_idx").on(table.referencedAssetId)
+  ]
+);
+
 export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),
   accounts: many(account),
@@ -206,7 +345,8 @@ export const accountRelations = relations(account, ({ one }) => ({
 export const organizationRelations = relations(organization, ({ many }) => ({
   members: many(member),
   invitations: many(invitation),
-  projects: many(project)
+  projects: many(project),
+  assets: many(asset)
 }));
 
 export const memberRelations = relations(member, ({ one }) => ({
@@ -238,7 +378,7 @@ export const ssoProviderRelations = relations(ssoProvider, ({ one }) => ({
   })
 }));
 
-export const projectRelations = relations(project, ({ one }) => ({
+export const projectRelations = relations(project, ({ one, many }) => ({
   organization: one(organization, {
     fields: [project.organizationId],
     references: [organization.id]
@@ -246,5 +386,38 @@ export const projectRelations = relations(project, ({ one }) => ({
   creator: one(user, {
     fields: [project.createdBy],
     references: [user.id]
+  }),
+  assets: many(asset)
+}));
+
+export const assetRelations = relations(asset, ({ one, many }) => ({
+  organization: one(organization, {
+    fields: [asset.organizationId],
+    references: [organization.id]
+  }),
+  project: one(project, {
+    fields: [asset.projectId],
+    references: [project.id]
+  }),
+  creator: one(user, {
+    fields: [asset.createdBy],
+    references: [user.id]
+  }),
+  /** Inputs this asset was generated from. */
+  references: many(assetReference, { relationName: "asset_references" }),
+  /** Generations that used this asset as an input. */
+  referencedBy: many(assetReference, { relationName: "asset_referenced_by" })
+}));
+
+export const assetReferenceRelations = relations(assetReference, ({ one }) => ({
+  asset: one(asset, {
+    fields: [assetReference.assetId],
+    references: [asset.id],
+    relationName: "asset_references"
+  }),
+  referencedAsset: one(asset, {
+    fields: [assetReference.referencedAssetId],
+    references: [asset.id],
+    relationName: "asset_referenced_by"
   })
 }));
