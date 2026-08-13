@@ -1,24 +1,49 @@
-import { NodeResizeControl, useReactFlow } from "@xyflow/react";
+import { NodeResizeControl, useReactFlow, useStore } from "@xyflow/react";
 import type { ControlPosition, Node, NodeProps, NodeTypes } from "@xyflow/react";
-import { createContext, useContext, useRef, useState } from "react";
+// The stylesheet is NOT imported here: `styles.css` pulls it in under
+// `layer(base)`, which is what lets the `.canvas-video` overrides there win
+// without specificity games. A second, unlayered import from this module
+// would outrank them all and quietly restore the stock skin.
+import { createContext, useContext, useEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
+import type Player from "video.js/dist/types/player";
 import { cn } from "tailwind-variants";
 
 import { ConfirmDialog } from "#/components/block/project-dialogs";
 import type { Modality } from "#/components/block/studio/ai-composer";
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
+import Progress from "#/components/ui/progress";
 import Skeleton from "#/components/ui/skeleton";
-import { aspectRatioValue } from "#/lib/sample-media";
+import { aspectRatioValue } from "#/lib/aspect-ratio";
 
 export type GenerationStatus = "pending" | "ready" | "failed";
 
 export interface GenerationNodeData extends Record<string, unknown> {
   modality: Modality;
+  /** What was asked for — or, on an uploaded file, its name. */
   prompt: string;
   model: string;
   aspectRatio?: string;
   status: GenerationStatus;
+  /**
+   * What the media element renders. New results carry the app's own
+   * `/api/assets/{id}/content` URL; documents from before the asset layer
+   * hold the third-party URLs the old stub answered with, and they keep
+   * rendering — this string staying the single seam is what makes that
+   * migration-free.
+   */
   src?: string;
+  /** The asset row behind `src`; absent on pre-asset-layer results. */
+  assetId?: string;
+  /** How the file came to exist. Absent means an AI generation. */
+  source?: "ai" | "upload";
+  /**
+   * What `src` serves, e.g. "video/mp4". The serving URL carries no
+   * extension, so a player that picks its pipeline by source type has to be
+   * told; absent on pre-asset-layer results, which did have extensions.
+   */
+  mimeType?: string;
   /**
    * The collaboration client the request started in. Informational — the
    * failure watchdog judges on age, not presence — but it says which tab to
@@ -65,6 +90,10 @@ export const NODE_WIDTH = 320;
  * A coarse pointer keeps its own — there is no hover there to earn it with, and
  * a canvas nothing can be resized on is worse than one where the handles are
  * only felt for.
+ *
+ * The resize handles no longer share this: theirs additionally waits for drag
+ * mode, built where they are (see {@link ResizeHandles}), so this const is the
+ * toolbar's alone.
  */
 const REVEAL_ON_HOVER = [
   "pointer-events-none opacity-0 transition-opacity duration-150",
@@ -189,33 +218,58 @@ export default function GenerationNodeView({ id, data, selected }: NodeProps<Gen
         className={cn(
           // No frame at rest — the result is the node. Selection gets a ring
           // rather than a border so there is still something to see when one is
-          // picked, without giving every node an edge it does not need.
-          //
-          // The outline is always here and always transparent, and only its
-          // hover colour comes and goes. Hanging the whole outline off the
-          // modifier instead is what made every node flash white the moment the
-          // key went down: `outline-width` and `outline-style` are not in the
-          // transition, so they landed at once, while `outline-color` had to
-          // travel to `transparent` from whatever it had been computing to
-          // without an outline utility — `currentColor`, which on this canvas is
-          // the white the text inherits. Two frames of a white frame on every
-          // node, then a fade to nothing.
-          "size-full overflow-hidden rounded-2xl outline-2 outline-offset-2 outline-transparent transition-[outline-color] duration-150",
-          // Only while the modifier is held: an outline that appeared on hover
-          // at all times would be promising something a plain pointer cannot do.
-          // The same blue the drag guides are drawn in, and for the same reason:
-          // this outline hugs the result two pixels out, so a translucent grey
-          // one disappears against any pale image it happens to land on.
-          dragMode && "hover:outline-blue-500",
+          // picked, without giving every node an edge it does not need. Drag
+          // mode used to add a hover outline on top; the resize handles are the
+          // ones saying "this can be taken hold of" now, so the result itself
+          // stays unframed in every state but selection.
+          "size-full overflow-hidden rounded-xl",
           selected && "ring-1 ring-[rgba(218,220,224,0.35)]"
         )}
       >
-        {visual ? <VisualBody data={data} /> : <SoundBody data={data} />}
+        {data.modality === "video" ? (
+          <VideoBody data={data} />
+        ) : visual ? (
+          <VisualBody data={data} />
+        ) : (
+          <SoundBody data={data} />
+        )}
       </div>
+
+      <TypeBadge modality={data.modality} />
 
       <NodeToolbar id={id} data={data} />
 
       <ResizeHandles visual={visual} />
+    </div>
+  );
+}
+
+/**
+ * The same glyphs the composer's tabs use, so the vocabulary someone chose a
+ * modality in is the vocabulary the result wears.
+ */
+const MODALITY_ICONS: Record<Modality, string> = {
+  image: "image",
+  voice: "graphic_eq",
+  music: "music_note",
+  video: "movie"
+};
+
+/**
+ * What kind of file this is, said once, in the corner the eye starts at. The
+ * toolbar's material — translucent white, black ink — worn as a label rather
+ * than a control: it takes no pointer, and it says nothing to a screen
+ * reader because the node's own label already opens with the modality. It is
+ * there from the first skeleton, which is when knowing what is coming is
+ * worth the most.
+ */
+function TypeBadge({ modality }: { modality: Modality }) {
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute top-2 left-2 rounded-lg bg-[rgba(255,255,255,0.6)] p-1 text-black shadow-[0_2px_10px_rgba(0,0,0,0.12)] backdrop-blur-xs"
+    >
+      <Icon name={MODALITY_ICONS[modality]} className="block text-sm" />
     </div>
   );
 }
@@ -236,48 +290,220 @@ function VisualBody({ data }: { data: GenerationNodeData }) {
       {failed ? <Failure /> : null}
 
       {data.src && !failed ? (
-        data.modality === "image" ? (
-          <img
-            src={data.src}
-            alt={data.prompt}
-            // Browsers let an image be dragged out of the page on its own, which
-            // puts a ghost under the cursor and takes the pointer away from the
-            // node drag that was actually starting.
-            draggable={false}
-            onLoad={() => afterFirstPaint(() => setRevealed(true))}
-            onError={() => setBroken(true)}
-            className={cn("absolute inset-0 size-full object-cover", revealClass(revealed))}
-          />
-        ) : (
-          <video
-            src={data.src}
-            // Still plays itself, because a canvas of stills that happen to move
-            // is what a board of clips should look like at a glance. `muted` is
-            // not a preference — no browser will autoplay without it — and the
-            // controls are how the sound gets turned back on.
-            autoPlay
-            muted
-            loop
-            playsInline
-            // The browser's own bar rather than one built here: it brings
-            // scrubbing, volume, fullscreen, keyboard access and the platform's
-            // own look with it, and none of that is worth reimplementing for a
-            // clip sitting on a board.
-            controls
-            // The toolbar above the node already offers the download, and it
-            // hands over a named file rather than whatever the URL ends in.
-            controlsList="nodownload"
-            // Deliberately no `nodrag`: it stops an element from starting a node
-            // drag, and this one covers the node completely, so marking it would
-            // leave the whole tile with nowhere to take hold of. The controls do
-            // not need protecting from that, because the two gestures are never
-            // the same one — a node only moves while the space bar is held, and
-            // nobody scrubs a timeline with it down.
-            className={cn("absolute inset-0 size-full object-cover", revealClass(revealed))}
-            onLoadedData={() => afterFirstPaint(() => setRevealed(true))}
-            onError={() => setBroken(true)}
-          />
-        )
+        <img
+          src={data.src}
+          alt={data.prompt}
+          // Browsers let an image be dragged out of the page on its own, which
+          // puts a ghost under the cursor and takes the pointer away from the
+          // node drag that was actually starting.
+          draggable={false}
+          onLoad={() => afterFirstPaint(() => setRevealed(true))}
+          onError={() => setBroken(true)}
+          className={cn("absolute inset-0 size-full object-cover", revealClass(revealed))}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * A clip at rest, with a transport of its own.
+ *
+ * Nothing plays until asked: a board where every clip is running is a board
+ * where nothing can be looked at, and because playback now begins with a
+ * press, sound arrives with it — the `muted` that autoplay demanded is gone,
+ * and the mute toggle is a preference again rather than a workaround.
+ *
+ * video.js runs the playback — source pipelines, buffering, the parts worth
+ * not rebuilding — but draws nothing: `controls: false` strips its chrome,
+ * and the transport is this component's own, in the same shape as the audio
+ * player's, so the two players read as one family instead of a library skin
+ * fighting the canvas. Double-click is stripped too (`userActions`): video.js
+ * would answer it with fullscreen, which on a board tile is a trapdoor.
+ *
+ * The library is imported on demand inside the effect because it expects a
+ * document to exist, and this module is also loaded while the route renders
+ * on the server.
+ */
+function VideoBody({ data }: { data: GenerationNodeData }) {
+  const host = useRef<HTMLDivElement>(null);
+  const playerRef = useRef<Player | null>(null);
+
+  const [revealed, setRevealed] = useState(false);
+  const [broken, setBroken] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [total, setTotal] = useState(0);
+
+  const failed = data.status === "failed" || broken;
+  const src = data.src;
+  const mimeType = data.mimeType;
+
+  useEffect(() => {
+    if (!src) return;
+
+    let player: Player | null = null;
+    let cancelled = false;
+
+    void import("video.js").then(({ default: videojs }) => {
+      const container = host.current;
+
+      if (cancelled || !container) return;
+
+      // video.js replaces the element it is handed, so it gets one of its
+      // own creation rather than anything React is reconciling.
+      const element = document.createElement("video-js");
+      element.classList.add("canvas-video");
+      container.appendChild(element);
+
+      player = videojs(element, {
+        // The engine only — the transport below is rendered by React.
+        controls: false,
+        autoplay: false,
+        preload: "auto",
+        fill: true,
+        playsinline: true,
+        // Double-click would go fullscreen; nothing on a canvas tile should.
+        userActions: { doubleClick: false },
+        // The serving URL has no extension, so the type is stated outright;
+        // older nodes predate the field and were always mp4 samples.
+        sources: [{ src, type: mimeType ?? "video/mp4" }]
+      });
+
+      // The reveal waits for a decodable first frame, not just metadata: a
+      // clip that is not playing is a still, and the still must exist before
+      // the skeleton hands over to it.
+      player.one("loadeddata", () => afterFirstPaint(() => setRevealed(true)));
+      player.on("durationchange", () => setTotal(player?.duration() ?? 0));
+      player.on("timeupdate", () => setElapsed(player?.currentTime() ?? 0));
+      player.on("play", () => setPlaying(true));
+      player.on("pause", () => setPlaying(false));
+      player.on("ended", () => setPlaying(false));
+      player.on("error", () => setBroken(true));
+
+      playerRef.current = player;
+    });
+
+    return () => {
+      cancelled = true;
+      playerRef.current = null;
+      player?.dispose();
+      player = null;
+    };
+  }, [src, mimeType]);
+
+  function toggle() {
+    const player = playerRef.current;
+
+    if (!player) return;
+
+    if (player.paused()) void player.play();
+    else player.pause();
+  }
+
+  /**
+   * The bar seeks by fraction of its own width, held through the drag by
+   * pointer capture — the pointer can wander off the strip mid-scrub without
+   * the scrub letting go. `elapsed` is set here as well as by `timeupdate`,
+   * which fires too coarsely for a thumb being dragged to feel attached.
+   */
+  function seek(event: ReactPointerEvent<HTMLDivElement>) {
+    const player = playerRef.current;
+
+    if (!player || total <= 0) return;
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const fraction = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+
+    player.currentTime(fraction * total);
+    setElapsed(fraction * total);
+  }
+
+  return (
+    <div className="relative size-full">
+      <Skeleton className={skeletonClass(revealed)} />
+
+      {failed ? <Failure /> : null}
+
+      {src && !failed ? (
+        <>
+          <div ref={host} className={cn("absolute inset-0", revealClass(revealed))} />
+
+          <div
+            className={cn(
+              // The scrim is what keeps white controls legible over bright
+              // footage; it fades with the controller so a playing clip is
+              // just the clip. Paused, it stays — a tile with no visible way
+              // to start is a dead picture.
+              "absolute inset-x-0 bottom-0 flex items-center gap-3 bg-gradient-to-t from-black/60 to-transparent p-3 pt-6 transition-opacity duration-150",
+              playing ? "opacity-0 group-hover:opacity-100" : "opacity-100"
+            )}
+            // A control, not something to take hold of — same rule as the
+            // toolbar: without this a press here would start dragging the
+            // node while the space bar is down.
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <Button
+              icon
+              shape="circle"
+              size="sm"
+              className="nodrag shrink-0"
+              aria-label={playing ? "Pause" : "Play"}
+              onClick={toggle}
+            >
+              <Icon name={playing ? "pause" : "play_arrow"} className="text-sm" />
+            </Button>
+
+            {/* Padded well past the 4px it draws at, because a seek target is
+                aimed at with a fingertip's precision, not a hairline's. The
+                bar itself only displays; interpreting a press as a seek is
+                this wrapper's job. */}
+            <div
+              className="nodrag min-w-0 flex-1 cursor-pointer py-2"
+              onPointerDown={(event) => {
+                event.currentTarget.setPointerCapture(event.pointerId);
+                seek(event);
+              }}
+              onPointerMove={(event) => {
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) seek(event);
+              }}
+            >
+              <Progress
+                value={elapsed}
+                max={total > 0 ? total : 1}
+                aria-label="Playback position"
+                // Both ends brightened from the wrapper's defaults: this bar
+                // sits on footage behind a dark scrim, not on the player's
+                // flat panel.
+                trackClassName="bg-[rgba(218,220,224,0.25)]"
+                indicatorClassName="bg-white/90"
+              />
+            </div>
+
+            <span className="shrink-0 text-[10px] leading-4 text-neutral-200 tabular-nums">
+              {clock(total > 0 ? total - elapsed : 0)}
+            </span>
+
+            <Button
+              icon
+              variant="ghost"
+              size="sm"
+              className="nodrag shrink-0 text-white hover:bg-white/15 hover:text-white"
+              aria-label={muted ? "Unmute" : "Mute"}
+              onClick={() => {
+                const player = playerRef.current;
+
+                if (!player) return;
+
+                player.muted(!player.muted());
+                setMuted(player.muted() ?? false);
+              }}
+            >
+              <Icon name={muted ? "volume_off" : "volume_up"} className="text-sm" />
+            </Button>
+          </div>
+        </>
       ) : null}
     </div>
   );
@@ -344,15 +570,11 @@ function SoundBody({ data }: { data: GenerationNodeData }) {
             onError={() => setBroken(true)}
           />
 
-          {/* `pe-20` is where the toolbar goes. It floats over the picture on a
-              node that has one, but here there is nothing to float over — so the
-              row it lands on gives up its tail instead, and the prompt truncates
-              before it reaches rather than sliding underneath. */}
-          <div className="flex items-center gap-2 pe-20">
-            <Icon
-              name={data.modality === "music" ? "music_note" : "graphic_eq"}
-              className="shrink-0 text-sm text-neutral-500"
-            />
+          {/* Padded at both ends for the things floating over this row: `pe-20`
+              is where the toolbar goes, and `ps-6` clears the type badge in the
+              top-left corner — which is also why this row no longer carries a
+              modality icon of its own; the badge says it for every node now. */}
+          <div className="flex items-center gap-2 ps-6 pe-20">
             <span className="truncate text-[11px] leading-4 text-neutral-300">{data.prompt}</span>
           </div>
 
@@ -489,35 +711,18 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
     <>
       <div
         /*
-         * Glass, and the fill is the smallest part of what makes it: at a bit
-         * over a quarter opaque the picture is genuinely coming through. Any
-         * more and this stops being a pane over the result and becomes a panel
-         * with a tint, which is the thing it is trying not to be.
+         * Quiet glass: one small blur and a white fill doing the actual work.
+         * The heavy pane this used to be — low fill propped up by a stack of
+         * brightness/contrast/saturation filters — processed the whole
+         * backdrop to stay legible; here the fill is simply opaque enough
+         * (three-fifths white) that black icons read over anything, including
+         * the player's near-black body, and the blur is a hint that the
+         * result continues underneath rather than an effect in its own right.
          *
-         * What holds the icons legible at that opacity is the filter stack, not
-         * the fill. Saturation first — a blur alone turns a colourful picture to
-         * grey haze, and it is the colour bleeding through that says there is
-         * something *behind* this rather than a hole cut in the node. Then the
-         * pair that actually earn the low fill: `contrast` pulls whatever is
-         * behind the strip in towards mid-grey and `brightness` lifts the result,
-         * so the backdrop arrives in a narrow, light band no matter what it
-         * started as. A quarter-opaque white over a player's near-black body
-         * composites to about rgb(90,90,90), and near-black icons on that is a
-         * contrast ratio of 2.6 — legible on a bright photograph and not legible
-         * at all on the one node that has no photograph. Squeezed and lifted
-         * first, the same backdrop lands near rgb(139,139,139) and the ratio is
-         * better than 5; a bright sky, which would otherwise blow out, is held
-         * around rgb(243,243,243) instead. This is how frosted panes are
-         * actually built — the surface adapts to what is under it, rather than
-         * hiding it under enough paint to stop mattering.
-         *
-         * Frosted white rather than smoked: the strip reads as a pane laid over
-         * the result instead of a shadow cut into it, which is the difference
-         * between something resting on the picture and something taken out of
-         * it. The whole palette turns over with the fill — the icons go dark
-         * because they now sit on light, the border is plain white because a
-         * grey hairline disappears into a white pane, and the shadow is light
-         * because a pale surface does not sit heavily over what is behind it.
+         * Borderless on purpose: the strip's edge is its shadow, and the
+         * question a border used to answer — where does one action end — is
+         * answered by the hover state instead, which lights the hovered
+         * action solid white.
          *
          * `top-2 right-2` where this used to need four. The inset was never a
          * taste — a corner handle reached fourteen pixels into the node, and
@@ -533,7 +738,7 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
          * that is simply too small to bother with at that zoom.
          */
         className={cn(
-          "absolute top-2 right-2 flex items-center gap-0.5 rounded-xl border border-[rgba(255,255,255,0.3)] bg-[rgba(255,255,255,0.28)] p-1 shadow-[0_2px_10px_rgba(0,0,0,0.12)] backdrop-blur-2xl backdrop-brightness-[1.4] backdrop-contrast-[0.6] backdrop-saturate-150",
+          "absolute top-2 right-2 flex items-center gap-0.5 rounded-xl bg-[rgba(255,255,255,0.6)] p-1 shadow-[0_2px_10px_rgba(0,0,0,0.12)] backdrop-blur-xs",
           REVEAL_ON_HOVER,
           "focus-within:pointer-events-auto focus-within:opacity-100 pointer-coarse:opacity-100"
         )}
@@ -548,10 +753,11 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
           size="sm"
           aria-label="Download"
           // `ghost` is built for a dark surface — grey text, and a hover that
-          // lifts the fill towards white. Both are invisible on a white pane, so
-          // the whole pairing is inverted here: near-black on a wash that goes
-          // *down* towards the ink instead of up away from it.
-          className="text-neutral-900 hover:bg-[rgba(0,0,0,0.07)] hover:text-neutral-950"
+          // lifts the fill towards white. On this light strip the text is
+          // simply black, and the hover goes the rest of the way to solid
+          // white: on a three-fifths-white ground, "lit up" reads as the one
+          // action that is fully opaque.
+          className="text-black hover:bg-white hover:text-black"
           // Nothing to save until the result has arrived.
           disabled={!data.src}
           pending={saving}
@@ -564,7 +770,10 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
           variant="ghost"
           size="sm"
           aria-label="Delete"
-          className="text-red-600 hover:bg-red-500/12 hover:text-red-700"
+          // Black like its neighbour — the strip speaks with one voice, and
+          // the destructive warning belongs to the confirm dialog that always
+          // follows this press, not to the icon.
+          className="text-black hover:bg-white hover:text-black"
           onClick={() => setConfirming(true)}
         >
           <Icon name="delete" className="text-sm" />
@@ -577,7 +786,13 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
         open={confirming}
         onClose={() => setConfirming(false)}
         title="Delete this result?"
-        description={`“${data.prompt}” will be removed from the canvas. This cannot be undone.`}
+        description={
+          // Only results the asset layer stored have a file to warn about;
+          // older nodes hold third-party URLs this app never owned.
+          data.assetId
+            ? `“${data.prompt}” and its stored file will be deleted. This cannot be undone.`
+            : `“${data.prompt}” will be removed from the canvas. This cannot be undone.`
+        }
         confirmLabel="Delete"
         destructive
         error={null}
@@ -591,45 +806,71 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
 }
 
 /**
- * A quarter circle curving around the corner it belongs to.
+ * A quarter arc hugging the corner it belongs to.
  *
  * React Flow centres a resize control *on* the corner — its stylesheet puts the
- * box at `left: 100%` and pulls it back by half its own size — so the corner
- * sits at the middle of this 28×28 box, at (14, 14).
+ * box at `left: 100%` and pulls it back by half its own size — so the node's
+ * corner point sits at the middle of this 28×28 box, at (14, 14). One svg path
+ * serves all four marks: a quarter turn at a time walks it round.
  *
- * The arc is swung from a centre of curvature *inside* the node, at (4, 4), with
- * a radius long enough to carry it past the corner: 18 against the 14.1 that
- * separates the two, so every point of it clears the node by a few pixels. That
- * is what makes it a handle sitting proud of the corner rather than a shape
- * drawn on the node — and it is what keeps the hover outline, which hugs the
- * node two pixels out, from enclosing the handles instead of the result.
- *
- * One path serves all four: a quarter turn at a time walks it round.
+ * The geometry inside the box is not fixed — see {@link cornerGeometry} — so
+ * this table only says where each control sits and how far to turn the mark.
  */
 const CORNERS = [
-  {
-    position: "bottom-right",
-    turn: "",
-    // The node lies up and to the left of this corner, so that quadrant is the
-    // one to give back.
-    clip: "polygon(50% 0, 100% 0, 100% 100%, 0 100%, 0 50%, 50% 50%)"
-  },
-  {
-    position: "bottom-left",
-    turn: "rotate-90",
-    clip: "polygon(0 0, 50% 0, 50% 50%, 100% 50%, 100% 100%, 0 100%)"
-  },
-  {
-    position: "top-left",
-    turn: "rotate-180",
-    clip: "polygon(0 0, 100% 0, 100% 50%, 50% 50%, 50% 100%, 0 100%)"
-  },
-  {
-    position: "top-right",
-    turn: "-rotate-90",
-    clip: "polygon(0 0, 100% 0, 100% 100%, 50% 100%, 50% 50%, 0 50%)"
-  }
-] as const satisfies readonly { position: ControlPosition; turn: string; clip: string }[];
+  { position: "bottom-right", turn: "" },
+  { position: "bottom-left", turn: "rotate-90" },
+  { position: "top-left", turn: "rotate-180" },
+  { position: "top-right", turn: "-rotate-90" }
+] as const satisfies readonly { position: ControlPosition; turn: string }[];
+
+/** The node's corner radius — `rounded-xl` — in the node's own pixels. */
+const NODE_RADIUS = 12;
+
+/** Screen pixels of daylight between the node's edge and the mark. */
+const HANDLE_GAP = 6;
+
+/**
+ * The corner marks and clips, derived against the zoom instead of assumed at
+ * 1:1.
+ *
+ * The handle box holds its screen size below 1:1 (autoScale), but the node's
+ * corner radius does not — on screen it is `12 × zoom`. Drawn for a 12px
+ * radius regardless, the mark's bend crept toward the corner as the board
+ * zoomed out (about `1 + 5·zoom` pixels of gap at the diagonal against a
+ * constant six at the ends), which read as a mark pinched at its middle. So
+ * everything is computed from the radius as it appears on screen, `r`: the
+ * node's centre of curvature sits at `c = 14 − r`, the mark is concentric at
+ * radius `r + gap` — the nested-card rule — and the gap is an even six at
+ * every zoom. At 1:1 and above the whole handle scales with the node, so `r`
+ * is simply 12 and the geometry is the one this file always had.
+ *
+ * The clips walk the node's true boundary: down the straight edge to the
+ * tangent point at `c`, along the corner's arc between tangents, and out the
+ * other straight edge — then round the box, enclosing everything except the
+ * node's side. Because they share `r`, hit-testing follows the on-screen
+ * curve at every zoom too.
+ *
+ * Quantized by the caller so a continuous pinch redraws the marks a handful
+ * of times, not once per frame.
+ */
+function cornerGeometry(zoom: number) {
+  const round = (value: number) => Number(value.toFixed(2));
+
+  const r = round(NODE_RADIUS * Math.min(1, Math.max(zoom, 0.05)));
+  const c = round(14 - r);
+  const m = round(14 + r);
+  const reach = round(r + HANDLE_GAP);
+
+  return {
+    arc: `M 20 ${c} A ${reach} ${reach} 0 0 1 ${c} 20`,
+    clips: {
+      "bottom-right": `path("M 14 0 L 14 ${c} A ${r} ${r} 0 0 1 ${c} 14 L 0 14 L 0 28 L 28 28 L 28 0 Z")`,
+      "bottom-left": `path("M 14 0 L 14 ${c} A ${r} ${r} 0 0 0 ${m} 14 L 28 14 L 28 28 L 0 28 L 0 0 Z")`,
+      "top-left": `path("M 14 28 L 14 ${m} A ${r} ${r} 0 0 1 ${m} 14 L 28 14 L 28 0 L 0 0 L 0 28 Z")`,
+      "top-right": `path("M 14 28 L 14 ${m} A ${r} ${r} 0 0 0 ${c} 14 L 0 14 L 0 0 L 28 0 L 28 28 Z")`
+    } satisfies Record<(typeof CORNERS)[number]["position"], string>
+  };
+}
 
 /**
  * A player's height is pinned, so it gets two edge handles instead of four
@@ -666,16 +907,40 @@ const SIDES = [
  * quarter zoom the reach is fifty-six and the button is gone entirely. The
  * corner handles did the same to a video's own transport controls.
  *
- * So each control gives its inner half back, by clip path — which governs
- * hit-testing as well as paint. What is left is the half hanging off the node,
- * where there is nothing to be in front of, and the mark drawn on it was already
- * living there: the corner arc is swung from a centre inside the node, clears
- * the corner by four pixels, and never crosses into the quadrant being clipped.
- * Nothing about how a handle looks changes — only where a press on it counts.
+ * So each control gives its inner region back, by clip path — which governs
+ * hit-testing as well as paint. On a side handle that is the inner half; on a
+ * corner it is everything inside the node's *rounded* edge, so the boundary of
+ * what still answers bends with the corner exactly as the mark does. What is
+ * left hangs off the node, where there is nothing to be in front of.
+ *
+ * autoScale used to bring a caveat here — a clip drawn for the 1:1 radius
+ * gave back a slightly wrong curve below it — but the corner geometry is now
+ * derived against the zoom (see {@link cornerGeometry}), so the give-back
+ * follows the edge as it actually appears at every scale.
  */
 const HANDLE_SIZE = 28;
 
 function ResizeHandles({ visual }: { visual: boolean }) {
+  const dragMode = useContext(DragModeContext);
+
+  // Quantized to twentieths so a continuous zoom gesture re-derives the
+  // corner geometry a handful of times across its whole travel; capped at 1
+  // because above 1:1 the handle scales with the node and needs no help.
+  const zoom = useStore((state) => Math.min(1, Math.ceil(state.transform[2] * 20) / 20));
+
+  /**
+   * The toolbar reveals on plain hover; these wait for drag mode as well.
+   * Resizing is a move-things-around gesture, so it lives behind the same
+   * space bar that dragging does — a pointer that cannot drag should not be
+   * shown handles either. Touch keeps its standing exception: no space bar,
+   * no hover, so its handles stay reachable without being shown.
+   */
+  const reveal = cn(
+    "pointer-events-none opacity-0 transition-opacity duration-150",
+    "pointer-coarse:pointer-events-auto",
+    dragMode && "group-hover:pointer-events-auto group-hover:opacity-100"
+  );
+
   // Inline rather than through `className`: React Flow styles its own handle
   // with two classes, which outranks a utility class, and what is wanted here is
   // not a small square with a border but nothing at all behind the mark.
@@ -706,7 +971,7 @@ function ResizeHandles({ visual }: { visual: boolean }) {
             position={position}
             {...bounds}
             style={{ ...box, clipPath: clip }}
-            className={REVEAL_ON_HOVER}
+            className={reveal}
           >
             {/* A bar rather than an arc. Four corner arcs promise a box that can
                 be pulled in both directions, and this one cannot: it offers the
@@ -714,7 +979,7 @@ function ResizeHandles({ visual }: { visual: boolean }) {
             <span
               aria-hidden
               className={cn(
-                "absolute top-1/2 h-6 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[rgba(218,220,224,0.9)]",
+                "absolute top-1/2 h-6 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-blue-500",
                 bar
               )}
             />
@@ -724,22 +989,27 @@ function ResizeHandles({ visual }: { visual: boolean }) {
     );
   }
 
+  const { arc, clips } = cornerGeometry(zoom);
+
   return (
     <>
-      {CORNERS.map(({ position, turn, clip }) => (
+      {CORNERS.map(({ position, turn }) => (
         <NodeResizeControl
           key={position}
           position={position}
           keepAspectRatio
           {...bounds}
-          style={{ ...box, clipPath: clip }}
-          className={REVEAL_ON_HOVER}
+          style={{ ...box, clipPath: clips[position] }}
+          className={reveal}
         >
+          {/* The outer card's corner, concentric with the node's own round at
+              whatever radius the zoom leaves it — see `cornerGeometry` for
+              the derivation and why it cannot be a constant. */}
           <svg viewBox="0 0 28 28" aria-hidden className={cn("size-full", turn)}>
             <path
-              d="M22 4 A 18 18 0 0 1 4 22"
+              d={arc}
               fill="none"
-              stroke="rgba(218,220,224,0.9)"
+              className="stroke-blue-500"
               strokeWidth="2.5"
               strokeLinecap="round"
             />

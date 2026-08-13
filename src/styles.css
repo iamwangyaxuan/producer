@@ -7,6 +7,9 @@
  * fight that gives no error and no clue.
  */
 @import "@xyflow/react/dist/style.css" layer(base);
+/* Same reasoning: video.js ships unlayered, and the canvas overrides below
+   must be able to win without specificity games. */
+@import "video.js/dist/video-js.css" layer(base);
 
 :root {
   --font-sans: "Source Sans 3";
@@ -115,4 +118,24 @@
 
     --xy-attribution-background-color: rgba(218, 220, 224, 0.08);
   }
+}
+
+/**
+ * video.js as an engine, not a face: the player draws no chrome of its own —
+ * `controls: false`, and the transport is React's, built next to the audio
+ * player it matches — so all that is asked of the library's styles is to
+ * stand exactly inside the node and let the footage fill it.
+ */
+.canvas-video.video-js {
+  background-color: transparent;
+  /* Stated here rather than trusted to the `fill` option: the player must be
+     exactly its host — the node decides the shape, `object-fit: cover` on the
+     tech reconciles the clip to it — and a player sized to the clip's own
+     ratio overflows the node and is clipped at the bottom edge. */
+  width: 100%;
+  height: 100%;
+}
+
+.canvas-video .vjs-tech {
+  object-fit: cover;
 }
