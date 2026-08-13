@@ -489,20 +489,51 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
     <>
       <div
         /*
-         * Glass, and thin enough to be glass: the fill is under half opaque and
-         * the blur behind it is what makes the icons readable, rather than a
-         * near-solid panel that would only be borrowing the word. The saturation
-         * bump is the rest of it — a blur alone turns a colourful picture to
-         * grey haze, and it is the colour bleeding through that says there is
-         * something *behind* this rather than a hole cut in the node.
+         * Glass, and the fill is the smallest part of what makes it: at a bit
+         * over a quarter opaque the picture is genuinely coming through. Any
+         * more and this stops being a pane over the result and becomes a panel
+         * with a tint, which is the thing it is trying not to be.
          *
-         * `top-4 right-4` is a clearance rather than a taste. The corner handle
-         * is centred *on* the corner, so it reaches fourteen pixels into the
-         * node; anything inset less than that overlaps it, and whichever of the
-         * two paints last takes the press.
+         * What holds the icons legible at that opacity is the filter stack, not
+         * the fill. Saturation first — a blur alone turns a colourful picture to
+         * grey haze, and it is the colour bleeding through that says there is
+         * something *behind* this rather than a hole cut in the node. Then the
+         * pair that actually earn the low fill: `contrast` pulls whatever is
+         * behind the strip in towards mid-grey and `brightness` lifts the result,
+         * so the backdrop arrives in a narrow, light band no matter what it
+         * started as. A quarter-opaque white over a player's near-black body
+         * composites to about rgb(90,90,90), and near-black icons on that is a
+         * contrast ratio of 2.6 — legible on a bright photograph and not legible
+         * at all on the one node that has no photograph. Squeezed and lifted
+         * first, the same backdrop lands near rgb(139,139,139) and the ratio is
+         * better than 5; a bright sky, which would otherwise blow out, is held
+         * around rgb(243,243,243) instead. This is how frosted panes are
+         * actually built — the surface adapts to what is under it, rather than
+         * hiding it under enough paint to stop mattering.
+         *
+         * Frosted white rather than smoked: the strip reads as a pane laid over
+         * the result instead of a shadow cut into it, which is the difference
+         * between something resting on the picture and something taken out of
+         * it. The whole palette turns over with the fill — the icons go dark
+         * because they now sit on light, the border is plain white because a
+         * grey hairline disappears into a white pane, and the shadow is light
+         * because a pale surface does not sit heavily over what is behind it.
+         *
+         * `top-2 right-2` where this used to need four. The inset was never a
+         * taste — a corner handle reached fourteen pixels into the node, and
+         * anything closer in than that overlapped it and lost the press to
+         * whichever painted last. The handles have since given their inner
+         * halves back, so nothing is claiming that corner any more and the strip
+         * can sit where it looks right.
+         *
+         * It rides the canvas zoom like the rest of the node. Standing it off at
+         * a fixed screen size is a change this has been through: it keeps the
+         * icons hittable when the board is small, but the strip then grows over
+         * a shrinking node until it is wearing it, which is worse than a control
+         * that is simply too small to bother with at that zoom.
          */
         className={cn(
-          "absolute top-4 right-4 flex items-center gap-0.5 rounded-xl border border-[rgba(218,220,224,0.12)] bg-[rgba(22,23,24,0.5)] p-1 shadow-[0_4px_16px_rgba(0,0,0,0.4)] backdrop-blur-xl backdrop-saturate-150",
+          "absolute top-2 right-2 flex items-center gap-0.5 rounded-xl border border-[rgba(255,255,255,0.3)] bg-[rgba(255,255,255,0.28)] p-1 shadow-[0_2px_10px_rgba(0,0,0,0.12)] backdrop-blur-2xl backdrop-brightness-[1.4] backdrop-contrast-[0.6] backdrop-saturate-150",
           REVEAL_ON_HOVER,
           "focus-within:pointer-events-auto focus-within:opacity-100 pointer-coarse:opacity-100"
         )}
@@ -516,9 +547,11 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
           variant="ghost"
           size="sm"
           aria-label="Download"
-          // A step brighter than `ghost` rests at. This sits over the result
-          // rather than over the canvas, and the result can be a white sky.
-          className="text-neutral-100"
+          // `ghost` is built for a dark surface — grey text, and a hover that
+          // lifts the fill towards white. Both are invisible on a white pane, so
+          // the whole pairing is inverted here: near-black on a wash that goes
+          // *down* towards the ink instead of up away from it.
+          className="text-neutral-900 hover:bg-[rgba(0,0,0,0.07)] hover:text-neutral-950"
           // Nothing to save until the result has arrived.
           disabled={!data.src}
           pending={saving}
@@ -531,7 +564,7 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
           variant="ghost"
           size="sm"
           aria-label="Delete"
-          className="text-red-400 hover:bg-red-500/15 hover:text-red-300"
+          className="text-red-600 hover:bg-red-500/12 hover:text-red-700"
           onClick={() => setConfirming(true)}
         >
           <Icon name="delete" className="text-sm" />
