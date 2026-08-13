@@ -2,7 +2,7 @@ import { useRef } from "react";
 
 import type { ComposerSubmission } from "#/components/block/studio/ai-composer";
 import type { GenerationNodeData } from "#/components/block/studio/generation-node";
-import { requestGeneration } from "#/lib/sample-media";
+import { runGeneration, startGeneration } from "#/lib/generate-asset";
 
 /**
  * The requests still in flight, kept apart from the canvas so deleting a node —
@@ -15,6 +15,7 @@ export function useGenerations() {
 
   async function start(
     id: string,
+    projectId: string,
     submission: ComposerSubmission,
     patch: (id: string, data: Partial<GenerationNodeData>) => void
   ) {
@@ -22,9 +23,37 @@ export function useGenerations() {
     inFlight.current.set(id, controller);
 
     try {
-      const src = await requestGeneration(submission, controller.signal);
+      // Two calls, and the seam between them is the point: the first only
+      // creates the asset record and answers with its id, which lands on the
+      // node *before* any model runs. From that moment the node and the row
+      // name each other — deleting the node mid-generation deletes the asset
+      // by id, and the server's completion bind notices and discards the
+      // bytes instead of leaving an unowned file behind.
+      const { assetId } = await startGeneration({
+        data: {
+          projectId,
+          modality: submission.modality,
+          prompt: submission.text,
+          model: submission.model,
+          resolution: submission.resolution,
+          aspectRatio: submission.aspectRatio,
+          duration: submission.duration,
+          referenceAssetIds: submission.referenceAssetIds ?? []
+        },
+        signal: controller.signal
+      });
 
-      patch(id, { src, status: "ready" });
+      patch(id, { assetId });
+
+      // The slow half: provider, R2, and the guarded bind of bytes to row.
+      // Everything the model needs was recorded by the first call, so this
+      // carries nothing but the id.
+      const { url, mimeType } = await runGeneration({
+        data: { assetId },
+        signal: controller.signal
+      });
+
+      patch(id, { src: url, mimeType, status: "ready" });
     } catch {
       // A cancelled request belongs to a node that is already gone; marking it
       // failed would be describing something nobody can see.

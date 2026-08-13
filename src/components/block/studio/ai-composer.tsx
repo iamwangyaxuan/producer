@@ -320,6 +320,12 @@ export interface ComposerSubmission {
   aspectRatio?: string;
   /** Seconds; video models only. */
   duration?: number;
+  /**
+   * Assets fed in as inputs. The composer has no file picker yet, so nothing
+   * sets this today — the field exists so the whole path down to the
+   * reference table is already plumbed when one arrives.
+   */
+  referenceAssetIds?: string[];
 }
 
 export interface AIComposerProps {

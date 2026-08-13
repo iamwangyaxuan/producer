@@ -1,13 +1,21 @@
-import type { ComposerSubmission, Modality } from "#/components/block/studio/ai-composer";
+import { aspectRatioValue } from "#/lib/aspect-ratio";
+
+import type {
+  GenerationProvider,
+  GenerationRequest,
+  GenerationResult
+} from "#/server/generation/provider";
+import type { Modality } from "#/components/block/studio/ai-composer";
 
 /**
  * Stand-in results for a generation backend that does not exist yet.
  *
- * Nothing here calls a model. Each request waits a plausible amount of time and
- * then answers with a real file from an open library, so the part being built —
- * a node appearing, holding its shape while it waits, and resolving into
- * content — runs end to end against real network behaviour rather than against
- * a data URI that is present before the skeleton can paint.
+ * Nothing here calls a model. Each request waits a plausible amount of time
+ * and then fetches a real file from an open library, so the pipeline being
+ * built — an asset row, bytes landing in R2, a node resolving into served
+ * content — runs end to end against real network behaviour. This is the
+ * server-side descendant of the old client-side `sample-media` stub; when a
+ * real provider arrives it replaces this file behind the same interface.
  *
  * Every URL below was checked to answer with the media type it claims. That is
  * worth doing rather than assuming: the sample bucket these lists would
@@ -62,8 +70,7 @@ const LATENCY_MS: Record<Modality, number> = {
 
 /**
  * Same prompt, same picture. A model that answered a repeated request with
- * something unrelated would be a strange one, and a stable seed also makes the
- * canvas survive a reload with its images intact.
+ * something unrelated would be a strange one.
  */
 function seedFrom(text: string) {
   let hash = 0;
@@ -79,31 +86,20 @@ function pick<T>(list: readonly T[], seed: number) {
   return list[seed % list.length];
 }
 
-/** `16:9` as a number, for CSS and for working out a pixel size. */
-export function aspectRatioValue(ratio: string | undefined) {
-  if (!ratio) return undefined;
-
-  const [width, height] = ratio.split(":").map(Number);
-
-  if (!width || !height) return undefined;
-
-  return width / height;
-}
-
 /**
- * A width that reads well on the canvas rather than the tier that was asked for:
- * requesting 4K from a placeholder service would cost seconds of transfer to
- * fill a box a few hundred pixels wide. The ratio is honoured, because that is
- * what the node was already sized to and a mismatch would show.
+ * A width that reads well on the canvas rather than the tier that was asked
+ * for: requesting 4K from a placeholder service would cost seconds of transfer
+ * to fill a box a few hundred pixels wide. The ratio is honoured, because that
+ * is what the node was already sized to and a mismatch would show.
  */
 const IMAGE_WIDTH = 960;
 
-export function sampleMediaUrl(submission: ComposerSubmission): string {
-  const seed = seedFrom(`${submission.model}:${submission.text}`);
+function sampleMediaUrl(request: GenerationRequest): string {
+  const seed = seedFrom(`${request.model}:${request.prompt}`);
 
-  switch (submission.modality) {
+  switch (request.modality) {
     case "image": {
-      const ratio = aspectRatioValue(submission.aspectRatio) ?? 1;
+      const ratio = aspectRatioValue(request.aspectRatio) ?? 1;
       const height = Math.round(IMAGE_WIDTH / ratio);
 
       return `${IMAGE_ORIGIN}/seed/${seed}/${IMAGE_WIDTH}/${height}`;
@@ -117,19 +113,8 @@ export function sampleMediaUrl(submission: ComposerSubmission): string {
   }
 }
 
-/**
- * Resolves with a URL to show, or rejects if the caller gave up first. The
- * signal is honoured so a node removed while it was still waiting does not come
- * back to life when its request lands.
- */
-export function requestGeneration(
-  submission: ComposerSubmission,
-  signal?: AbortSignal
-): Promise<string> {
-  const base = LATENCY_MS[submission.modality];
-  const wait = base + Math.random() * base * 0.4;
-
-  return new Promise((resolve, reject) => {
+function wait(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason);
 
@@ -138,8 +123,8 @@ export function requestGeneration(
 
     const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
-      resolve(sampleMediaUrl(submission));
-    }, wait);
+      resolve();
+    }, ms);
 
     function onAbort() {
       clearTimeout(timer);
@@ -149,3 +134,28 @@ export function requestGeneration(
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
+
+export const sampleProvider: GenerationProvider = {
+  async run(request, signal): Promise<GenerationResult> {
+    const base = LATENCY_MS[request.modality];
+
+    await wait(base + Math.random() * base * 0.4, signal);
+
+    const response = await fetch(sampleMediaUrl(request), { signal });
+
+    if (!response.ok || !response.body) {
+      throw new Error(`Sample media answered ${response.status}`);
+    }
+
+    const contentType = response.headers.get("content-type") ?? "application/octet-stream";
+    const lengthHeader = response.headers.get("content-length");
+
+    // R2 refuses a stream of unknown length; the sample origins all send
+    // Content-Length, but when one does not the file is small enough to hold.
+    if (lengthHeader === null) {
+      return { body: await response.arrayBuffer(), contentType };
+    }
+
+    return { body: response.body, contentType, contentLength: Number(lengthHeader) };
+  }
+};

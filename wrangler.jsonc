@@ -33,6 +33,19 @@
     "enabled": true
   },
   "upload_source_maps": true,
+  // Media bytes for the asset layer (AI generations + user uploads). `remote`
+  // matters: uploads go straight from the browser to R2 via presigned S3 URLs,
+  // which always hit the real endpoint — a locally simulated binding would be
+  // reading a different store than the one uploads land in, so local dev binds
+  // to the real dev bucket (`preview_bucket_name`) instead.
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "producer-media",
+      "preview_bucket_name": "producer-media-dev",
+      "remote": true
+    }
+  ],
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",

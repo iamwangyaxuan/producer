@@ -15,9 +15,12 @@ import { Route as MenuPreviewRouteImport } from './routes/menu-preview'
 import { Route as AuthDashboardRouteRouteImport } from './routes/_auth/_dashboard/route'
 import { Route as LoginIndexRouteImport } from './routes/login/index'
 import { Route as AuthStudioProjectIdRouteRouteImport } from './routes/_auth/studio/$projectId/route'
+import { Route as ApiAssetsIndexRouteImport } from './routes/api/assets/index'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as AuthDashboardProjectsIndexRouteImport } from './routes/_auth/_dashboard/projects/index'
 import { Route as AuthStudioProjectIdIndexRouteImport } from './routes/_auth/studio/$projectId/index'
+import { Route as ApiAssetsAssetIdCompleteRouteImport } from './routes/api/assets/$assetId/complete'
+import { Route as ApiAssetsAssetIdContentRouteImport } from './routes/api/assets/$assetId/content'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -48,6 +51,11 @@ const AuthStudioProjectIdRouteRoute =
     path: '/studio/$projectId',
     getParentRoute: () => AuthRouteRoute,
   } as any)
+const ApiAssetsIndexRoute = ApiAssetsIndexRouteImport.update({
+  id: '/api/assets/',
+  path: '/api/assets/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -65,6 +73,17 @@ const AuthStudioProjectIdIndexRoute =
     path: '/',
     getParentRoute: () => AuthStudioProjectIdRouteRoute,
   } as any)
+const ApiAssetsAssetIdCompleteRoute =
+  ApiAssetsAssetIdCompleteRouteImport.update({
+    id: '/api/assets/$assetId/complete',
+    path: '/api/assets/$assetId/complete',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiAssetsAssetIdContentRoute = ApiAssetsAssetIdContentRouteImport.update({
+  id: '/api/assets/$assetId/content',
+  path: '/api/assets/$assetId/content',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -72,6 +91,9 @@ export interface FileRoutesByFullPath {
   '/login/': typeof LoginIndexRoute
   '/studio/$projectId': typeof AuthStudioProjectIdRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/assets/': typeof ApiAssetsIndexRoute
+  '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
+  '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRoute
   '/projects/': typeof AuthDashboardProjectsIndexRoute
   '/studio/$projectId/': typeof AuthStudioProjectIdIndexRoute
 }
@@ -80,6 +102,9 @@ export interface FileRoutesByTo {
   '/menu-preview': typeof MenuPreviewRoute
   '/login': typeof LoginIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/assets': typeof ApiAssetsIndexRoute
+  '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
+  '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRoute
   '/projects': typeof AuthDashboardProjectsIndexRoute
   '/studio/$projectId': typeof AuthStudioProjectIdIndexRoute
 }
@@ -92,6 +117,9 @@ export interface FileRoutesById {
   '/login/': typeof LoginIndexRoute
   '/_auth/studio/$projectId': typeof AuthStudioProjectIdRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/assets/': typeof ApiAssetsIndexRoute
+  '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
+  '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRoute
   '/_auth/_dashboard/projects/': typeof AuthDashboardProjectsIndexRoute
   '/_auth/studio/$projectId/': typeof AuthStudioProjectIdIndexRoute
 }
@@ -103,6 +131,9 @@ export interface FileRouteTypes {
     | '/login/'
     | '/studio/$projectId'
     | '/api/auth/$'
+    | '/api/assets/'
+    | '/api/assets/$assetId/complete'
+    | '/api/assets/$assetId/content'
     | '/projects/'
     | '/studio/$projectId/'
   fileRoutesByTo: FileRoutesByTo
@@ -111,6 +142,9 @@ export interface FileRouteTypes {
     | '/menu-preview'
     | '/login'
     | '/api/auth/$'
+    | '/api/assets'
+    | '/api/assets/$assetId/complete'
+    | '/api/assets/$assetId/content'
     | '/projects'
     | '/studio/$projectId'
   id:
@@ -122,6 +156,9 @@ export interface FileRouteTypes {
     | '/login/'
     | '/_auth/studio/$projectId'
     | '/api/auth/$'
+    | '/api/assets/'
+    | '/api/assets/$assetId/complete'
+    | '/api/assets/$assetId/content'
     | '/_auth/_dashboard/projects/'
     | '/_auth/studio/$projectId/'
   fileRoutesById: FileRoutesById
@@ -132,6 +169,9 @@ export interface RootRouteChildren {
   MenuPreviewRoute: typeof MenuPreviewRoute
   LoginIndexRoute: typeof LoginIndexRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+  ApiAssetsIndexRoute: typeof ApiAssetsIndexRoute
+  ApiAssetsAssetIdCompleteRoute: typeof ApiAssetsAssetIdCompleteRoute
+  ApiAssetsAssetIdContentRoute: typeof ApiAssetsAssetIdContentRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -178,6 +218,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthStudioProjectIdRouteRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/api/assets/': {
+      id: '/api/assets/'
+      path: '/api/assets'
+      fullPath: '/api/assets/'
+      preLoaderRoute: typeof ApiAssetsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/auth/$': {
       id: '/api/auth/$'
       path: '/api/auth/$'
@@ -198,6 +245,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/studio/$projectId/'
       preLoaderRoute: typeof AuthStudioProjectIdIndexRouteImport
       parentRoute: typeof AuthStudioProjectIdRouteRoute
+    }
+    '/api/assets/$assetId/complete': {
+      id: '/api/assets/$assetId/complete'
+      path: '/api/assets/$assetId/complete'
+      fullPath: '/api/assets/$assetId/complete'
+      preLoaderRoute: typeof ApiAssetsAssetIdCompleteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/assets/$assetId/content': {
+      id: '/api/assets/$assetId/content'
+      path: '/api/assets/$assetId/content'
+      fullPath: '/api/assets/$assetId/content'
+      preLoaderRoute: typeof ApiAssetsAssetIdContentRouteImport
+      parentRoute: typeof rootRouteImport
     }
   }
 }
@@ -247,6 +308,9 @@ const rootRouteChildren: RootRouteChildren = {
   MenuPreviewRoute: MenuPreviewRoute,
   LoginIndexRoute: LoginIndexRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
+  ApiAssetsIndexRoute: ApiAssetsIndexRoute,
+  ApiAssetsAssetIdCompleteRoute: ApiAssetsAssetIdCompleteRoute,
+  ApiAssetsAssetIdContentRoute: ApiAssetsAssetIdContentRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
