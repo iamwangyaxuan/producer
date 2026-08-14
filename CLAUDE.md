@@ -63,6 +63,17 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 - `use-canvas-collab.ts` 是唯一写入口：本地变更同时写 React state 和 Y.Map（`localOrigin` 用来区分本地/远端事务），手势写入走 60ms trailing 节流、手势结束必写；光标走 awareness；20s 心跳（y-partyserver 关掉了协议自带的续期）。生成超时看门狗要两个条件同时满足才判死：节点自己的 `requestedAt` 超龄，**且**超龄之后还被本机 sweep 盯满一个超时周期（按 tick 计数，只在超龄时累加；挂起/失联的间隙会清空计时——所以判死落在最后一次心跳后约两个超时周期，时钟快或标签挂起都杀不掉活的）；上传与生成都每 60s 续 `requestedAt`。不依赖 awareness（DO 休眠唤醒后 awareness 是空表）。
 - `createCanvasSession` 必须显式传 `protocol`：provider 默认按主机名猜协议，`app.localhost` 之类会被猜成 wss。
 
+### 画布交互（`components/block/studio/*`、`routes/_auth/studio/$projectId/index.tsx`）
+
+协同之外的另一半：谁决定坐标，以及哪些画布状态**故意**不进共享文档。
+
+- **画布没有栅格**，背景点只是纹理（`DOT_SPACING`），节点停在被拖到的任意坐标。正因为没有量化，吸附才有意义——在格点画布上节点永远不会"差几个像素没对齐"，参考线只会在你已经到位之后才出现。
+- `use-snap-guides.ts` 是 React Flow 与文档之间**唯一**修正坐标的一层：每个 change 仍恰好流向 `apply` 一次，只是在足够近时被拉过去并画一条线。阈值以 flow 单位计（放大不该让吸附变容易）；先问对齐（`alignmentFor`）、再问等距（`spacingFor`），后者只认领前者没占走的轴。`apply` 由调用方给（现在是 `collab.applyNodesChange`），吸附层不关心写去哪。
+- **新节点落点由 `canvas-placement.ts` 定**：`freePosition` 的候选取自真实邻居的边（共边、共中线、隔一个 gutter 并排），不是格点；锚点自身也在候选里，所以视野中央本来就空就地不动，不为了对齐而搬家。**没有"一键整理"**：全局重排会把别人正在看的地方从他们眼前搬走，落点与吸附已经让每个节点在放下的那一刻就是对齐的。
+- **视口刻意不入共享文档**：它是唯一应该因人而异的画布状态，落 localStorage（`producer:canvas:<projectId>:viewport`），mount 后再恢复而不是走 `defaultViewport`——SSR 那侧没有 storage 可读。
+- **空格键是"移动模式"**（`useKeyPress("Space")`），平移与节点拖拽都等它，误拖推不动别人的排版。按下时要对聚焦在 button/a 上的空格 `preventDefault`（capture 阶段自己挂监听，`useKeyPress` 对 BUTTON/A 特意跳过 preventDefault 且没有开关）：否则"点完工具栏按钮 → 按住空格拖节点 → 松手"会把那次点击再触发一遍。**不能改用 `blur()` 摘焦点**——浏览器是在 keydown *派发之后*才把按钮标记 `:active`，比任何 handler/effect 都晚，摘了焦点等于把 `:active` 留在一个收不到 keyup 的元素上，`active:blur-[1.5px]` 于是永久糊着，只有在它上面重新按一次鼠标才复位。
+- 节点靠三个 context 拿它不该写进文档的东西：`DragModeContext`（按键级状态，写进每个节点的 data 等于一次按键重写整张图）、`NodeActionsContext`（`canRetry`/`retry` 描述的是**这个 tab 的能力**，不是结果的属性）、`RetryContext`（同一个 retry，已绑定到当前节点，省得深处的失败提示还要接 id 和 data）。
+
 ### 资产层（`asset` 表 + R2）
 
 核心不变量：**行先于字节，墓碑先于删字节**。所以桶里永远不会有数据库不认识的对象，代价是需要 `src/server/asset-sweep.ts` 的 cron 清扫（24h 宽限期后回收 tombstoned / 长期 pending / failed 三类行）。
@@ -86,14 +97,21 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 
 `getDB()`（`src/db/index.ts`）按 Request 用 WeakMap 缓存连接池，走 Hyperdrive 连接串、`maxUses: 1`。schema 在 `src/db/schema.ts`，id 默认值是 Postgres 的 `uuidv7()`；需要在插入前知道 id（object key 里嵌了 id）时先 `select uuidv7()` 取一个。
 
+- **每个 `createServerFn` handler 的形状是固定的**，`src/lib/projects.ts` 是范本：从 `getRequest().headers` 解析会话 → 取 `activeOrganizationId` → 重新 join `member` 校验成员 → `where` 里同时带资源 id 与 organizationId。最后这条是安全属性不是写法偏好——别的租户的 project id 匹配不到行，于是"无权"和"不存在"在响应里长得一模一样。读路径把这种情况答成 `null` / 空列表，写路径抛 `NOT_FOUND`：对"重命名一个你无权重命名的项目"没有合理的空答案。
+- 写路径的 id 一律经 `canonicalId` 校验；**`fetchProject` 故意只声明 `z.string()`**：id 直接来自 URL，拼错要和"没有这个项目"走同一条路而不是弹错误屏。形状检查仍在 handler 内做——大写 id 必须在这里也答"没有"，否则 studio 外壳能加载，而画布 socket、生成、上传三处闸门对同一条 URL 全答 401。
+- 查询键两套命名空间：`["organizations", orgId, "projects", …]`（`src/lib/projects.ts`）与 `["projects", projectId, "assets"]`（`projectAssetsScope`）。**`organizationId` 只进键、绝不上行**——服务端自己决定读什么，键只决定记住什么，它在这里唯一的作用是拦住"切组织或换账号后把上一个租户的缓存画出来"。项目相关的写统一 invalidate `["organizations"]` 前缀。
+- **新增查询必须显式给 `staleTime`**（现存的都是 30s）：query client 建时没有任何默认值，`staleTime: 0` 会让 SSR 脱水的条目一挂载就过期、`useSuspenseQuery` 立刻重取一趟（每次加载多一次会话解析）；更糟的是它出错会抛——一次后台重取抖动就能把已经渲染好的页面换成错误屏。
+- **`.cta.json` 脚手架留下的依赖有一批没用上**：`@modelcontextprotocol/sdk`、`@tanstack/react-db`、`@tanstack/query-db-collection`、`@tanstack/store` / `@tanstack/react-store`、`@tanstack/react-hotkeys` 在 `src/` 里零引用。别因为它们在 `package.json` 里就推断本仓库的方案：服务端状态一律 React Query + `createServerFn`，画布状态在 Yjs，其余是 `useState` 与 context。
+
 ### 前端约定
 
 - 路径别名 `#/*` 与 `@/*` 都指向 `src/`，代码里统一用 `#/`。
 - 路由在 `src/routes/`：`_auth` 做会话守卫并把 session 放进 route context；`_auth/studio/$projectId/route.tsx` 这层负责 loader 与文档标题，子路由从 query 缓存读。API 路由用 `createFileRoute(...).server.handlers`。
 - `components/ui/` 是 Base UI + `tailwind-variants` 的薄封装（暗色主题，样式挂 `data-*` 而非伪类）；`components/block/` 是业务块，画布相关全在 `components/block/studio/`。
-- 第三方 CSS 用 `@import ... layer(base)` 引入（React Flow、video.js 的样式表无 layer，否则会盖过 utility）。
+- 第三方 CSS 用 `@import ... layer(base)` 引入（React Flow、video.js 的样式表无 layer，否则会盖过 utility）。**组件里不要再 import 一次**：`generation-node.tsx` 只动态 `import("video.js")` 取播放器，样式表由 `styles.css` 一处引入——第二次无 layer 的 import 会盖掉那里的 `.canvas-video` 覆写，安静地把原皮肤装回来。
+- `/menu-preview` 是 `components/ui/menu` 的沙盒页，不在 `_auth` 下，也不是产品里的页面——改菜单组件时拿它对照，别当成有人在用的路由去维护。
 - AI 输入框是 **tiptap 编辑器**，不是 textarea（`ai-composer.tsx` + `use-asset-mentions.ts` + `asset-mention.tsx`）。理由是 `@` 提及必须是**原子节点**：在 textarea 里它只能是一串代表 id 的字符，任何一次退格或粘贴都会让标签和真正要发送的 id 悄悄对不上。`renderText` 决定它在 `getText()` 里长什么样（`@标签`，`@` 只在这里保留——它标出哪些词指向附件），提交时的 id 则从 doc 里遍历节点取。编辑器只创建一次，变动的东西（资产列表、模型能力、Enter 的行为）一律经 ref 读取。
-- 提及在编辑器里是**纯文本加一个颜色**，没有色块、圆角、图标，视觉上也不显示 `@`。这不只是审美：给它做成 chip 会让 inline-flex 的基线取自图标而非文字，整块比同行文字高出一截——纯 inline 文本没有这个问题。项目是纯灰阶（只有 `#000`/`#fff` + neutral + 危险红），所以提及是唯一带色相的元素。
+- 提及在编辑器里是**纯文本加一个颜色**，没有色块、圆角、图标，视觉上也不显示 `@`。这不只是审美：给它做成 chip 会让 inline-flex 的基线取自图标而非文字，整块比同行文字高出一截——纯 inline 文本没有这个问题。项目主体是灰阶（`#000`/`#fff` + neutral + 危险红），蓝色专门留给"这里正在发生交互"——吸附参考线、trim 手柄、焦点环一律 `blue-500`，所以提及这支更浅的 `#8ab4f8` 是正文里唯一带色相的东西。
 - `@` 候选**只列画布上的文件**（`attachableAssets`），不是项目里的全部资产：删掉节点后资产行还在，列全量会冒出画布上根本不存在的东西，同一文件被两个节点用还会重复。再按 `modelAccepts(model)` 过滤——给 TTS 模型附图片没有意义。
 - 文案走 Paraglide：`messages/*.json` → 生成 `src/paraglide/`，策略 `["url", "baseLocale"]`。
 
