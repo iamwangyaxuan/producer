@@ -147,99 +147,91 @@ function withDisposition(headers: Headers, request: Request, asset: AssetRow) {
  * changes what the link looks like and nothing else.
  */
 export async function serveAssetContent(request: Request, assetId: string) {
-  {
-    {
-      {
-        const access = await requireAssetAccess(request.headers, assetId);
+  const access = await requireAssetAccess(request.headers, assetId);
 
-        // Only ready rows serve: a pending object may be half-written, and a
-        // failed one has nothing worth showing. Both answer like they do not
-        // exist, same as another tenant's asset.
-        if (!access || access.asset.status !== "ready") {
-          return new Response("Not found", { status: 404 });
-        }
-
-        const { asset } = access;
-
-        let object: R2Object | R2ObjectBody | null;
-        try {
-          // R2 parses the Range and conditional headers itself; an
-          // unsatisfiable or multipart range is the one case it throws for.
-          // The header set is only offered as a range when it actually holds
-          // one — offered unconditionally, a plain GET comes back wearing a
-          // vacuous range and would be served as a 206.
-          //
-          // Only the cache-revalidation conditions are delegated. R2 answers
-          // any failed condition the same way — metadata, no body — which
-          // reads as a 304, but a failed `If-Match` owes a 412; those are
-          // evaluated below instead.
-          object = await env.MEDIA.get(asset.objectKey, {
-            range: request.headers.has("range") ? request.headers : undefined,
-            onlyIf: revalidationConditions(request.headers)
-          });
-        } catch {
-          return new Response(null, {
-            status: 416,
-            headers: { "Content-Range": `bytes */${asset.sizeBytes ?? 0}` }
-          });
-        }
-
-        // A ready row whose object is gone is a broken invariant, not a user
-        // mistake — worth a log line the day it happens.
-        if (!object) {
-          console.error(`asset ${asset.id} is ready but ${asset.objectKey} is missing from R2`);
-
-          return new Response("Not found", { status: 404 });
-        }
-
-        // The bytes are only this asset's if they are the ones it was
-        // measured with. An upload's presigned URL stays usable after
-        // completion, so a moved ETag means something replaced the object
-        // behind a row that had already been checked — served, it would hand
-        // teammates content nothing ever validated.
-        if (asset.etag && object.etag !== asset.etag) {
-          console.error(`asset ${asset.id} object ${asset.objectKey} changed under a ready row`);
-
-          return new Response("Not found", { status: 404 });
-        }
-
-        const headers = withDisposition(baseHeaders(asset, object.httpEtag), request, asset);
-
-        const precondition = failedPrecondition(request.headers, object);
-
-        if (precondition) return new Response(null, { status: 412, headers });
-
-        // A delegated condition matched: R2 answers with metadata but no
-        // body, which is exactly a 304.
-        if (!("body" in object)) {
-          return new Response(null, { status: 304, headers });
-        }
-
-        // Judged by what the client asked, not by what the result object
-        // carries: this runtime populates `object.range` with a full-object
-        // span even on a plain read, and a 206 nobody asked for confuses
-        // caches and media elements alike.
-        const served =
-          request.headers.has("range") && object.range
-            ? resolveRange(object.range, object.size)
-            : null;
-
-        if (served) {
-          headers.set(
-            "Content-Range",
-            `bytes ${served.offset}-${served.offset + served.length - 1}/${object.size}`
-          );
-          headers.set("Content-Length", String(served.length));
-
-          return new Response(object.body, { status: 206, headers });
-        }
-
-        headers.set("Content-Length", String(object.size));
-
-        return new Response(object.body, { status: 200, headers });
-      }
-    }
+  // Only ready rows serve: a pending object may be half-written, and a
+  // failed one has nothing worth showing. Both answer like they do not
+  // exist, same as another tenant's asset.
+  if (!access || access.asset.status !== "ready") {
+    return new Response("Not found", { status: 404 });
   }
+
+  const { asset } = access;
+
+  let object: R2Object | R2ObjectBody | null;
+  try {
+    // R2 parses the Range and conditional headers itself; an
+    // unsatisfiable or multipart range is the one case it throws for.
+    // The header set is only offered as a range when it actually holds
+    // one — offered unconditionally, a plain GET comes back wearing a
+    // vacuous range and would be served as a 206.
+    //
+    // Only the cache-revalidation conditions are delegated. R2 answers
+    // any failed condition the same way — metadata, no body — which
+    // reads as a 304, but a failed `If-Match` owes a 412; those are
+    // evaluated below instead.
+    object = await env.MEDIA.get(asset.objectKey, {
+      range: request.headers.has("range") ? request.headers : undefined,
+      onlyIf: revalidationConditions(request.headers)
+    });
+  } catch {
+    return new Response(null, {
+      status: 416,
+      headers: { "Content-Range": `bytes */${asset.sizeBytes ?? 0}` }
+    });
+  }
+
+  // A ready row whose object is gone is a broken invariant, not a user
+  // mistake — worth a log line the day it happens.
+  if (!object) {
+    console.error(`asset ${asset.id} is ready but ${asset.objectKey} is missing from R2`);
+
+    return new Response("Not found", { status: 404 });
+  }
+
+  // The bytes are only this asset's if they are the ones it was
+  // measured with. An upload's presigned URL stays usable after
+  // completion, so a moved ETag means something replaced the object
+  // behind a row that had already been checked — served, it would hand
+  // teammates content nothing ever validated.
+  if (asset.etag && object.etag !== asset.etag) {
+    console.error(`asset ${asset.id} object ${asset.objectKey} changed under a ready row`);
+
+    return new Response("Not found", { status: 404 });
+  }
+
+  const headers = withDisposition(baseHeaders(asset, object.httpEtag), request, asset);
+
+  const precondition = failedPrecondition(request.headers, object);
+
+  if (precondition) return new Response(null, { status: 412, headers });
+
+  // A delegated condition matched: R2 answers with metadata but no
+  // body, which is exactly a 304.
+  if (!("body" in object)) {
+    return new Response(null, { status: 304, headers });
+  }
+
+  // Judged by what the client asked, not by what the result object
+  // carries: this runtime populates `object.range` with a full-object
+  // span even on a plain read, and a 206 nobody asked for confuses
+  // caches and media elements alike.
+  const served =
+    request.headers.has("range") && object.range ? resolveRange(object.range, object.size) : null;
+
+  if (served) {
+    headers.set(
+      "Content-Range",
+      `bytes ${served.offset}-${served.offset + served.length - 1}/${object.size}`
+    );
+    headers.set("Content-Length", String(served.length));
+
+    return new Response(object.body, { status: 206, headers });
+  }
+
+  headers.set("Content-Length", String(object.size));
+
+  return new Response(object.body, { status: 200, headers });
 }
 
 /**
@@ -247,36 +239,30 @@ export async function serveAssetContent(request: Request, assetId: string) {
  * honestly costs one metadata read.
  */
 export async function headAssetContent(request: Request, assetId: string) {
-  {
-    {
-      {
-        const access = await requireAssetAccess(request.headers, assetId);
+  const access = await requireAssetAccess(request.headers, assetId);
 
-        if (!access || access.asset.status !== "ready") {
-          return new Response(null, { status: 404 });
-        }
-
-        const object = await env.MEDIA.head(access.asset.objectKey);
-
-        if (!object) return new Response(null, { status: 404 });
-
-        // The same refusal the GET gives a replaced object, or a player's
-        // probe would succeed against bytes the stream request then 404s.
-        if (access.asset.etag && object.etag !== access.asset.etag) {
-          console.error(
-            `asset ${access.asset.id} object ${access.asset.objectKey} changed under a ready row`
-          );
-
-          return new Response(null, { status: 404 });
-        }
-
-        const headers = baseHeaders(access.asset, object.httpEtag);
-        headers.set("Content-Length", String(object.size));
-
-        return new Response(null, { status: 200, headers });
-      }
-    }
+  if (!access || access.asset.status !== "ready") {
+    return new Response(null, { status: 404 });
   }
+
+  const object = await env.MEDIA.head(access.asset.objectKey);
+
+  if (!object) return new Response(null, { status: 404 });
+
+  // The same refusal the GET gives a replaced object, or a player's
+  // probe would succeed against bytes the stream request then 404s.
+  if (access.asset.etag && object.etag !== access.asset.etag) {
+    console.error(
+      `asset ${access.asset.id} object ${access.asset.objectKey} changed under a ready row`
+    );
+
+    return new Response(null, { status: 404 });
+  }
+
+  const headers = baseHeaders(access.asset, object.httpEtag);
+  headers.set("Content-Length", String(object.size));
+
+  return new Response(null, { status: 200, headers });
 }
 
 export const Route = createFileRoute("/api/assets/$assetId/content")({
