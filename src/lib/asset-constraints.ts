@@ -12,11 +12,12 @@ import type { AssetKind } from "#/db/schema";
 
 /**
  * SVG is deliberately absent from the image list: it can carry script, and
- * these files were served inline from the app's own origin — a stored SVG
- * would have been a stored XSS. Bytes now leave through presigned R2 URLs on a
- * different host, which declaws that specific attack, but the list stays as it
- * is: it is also what decides whether a type renders at all, and widening it
- * for a format nothing displays would buy nothing.
+ * these files are served inline from the app's own origin — a stored SVG would
+ * be a stored XSS. The presigned path does not soften that: it pins
+ * `response-content-type` to the verdict `servableMime` reaches from this same
+ * list, so what a type may be inlined as has one answer whichever way the
+ * bytes leave. The list is also what decides whether a type renders at all, so
+ * widening it for a format nothing displays would buy nothing.
  */
 export const ALLOWED_MIME: Record<AssetKind, readonly string[]> = {
   image: ["image/png", "image/jpeg", "image/webp", "image/gif", "image/avif"],
