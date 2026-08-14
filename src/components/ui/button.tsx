@@ -25,7 +25,22 @@ const buttonClass = tv({
     // `--tw-outline-style: none`, which is the variable `outline-2` then reads
     // for its own `outline-style` — the ring would come out 2px wide, offset,
     // coloured, and invisible. A button has no outline at rest anyway.
-    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-50",
+    //
+    // Blue rather than a light neutral, and the same blue the canvas already
+    // uses for its snap guides and trim handles. On a greyscale interface a
+    // near-white ring is the same value as half the things it lands next to, so
+    // it reads as one more highlight; the one hue in the palette cannot be
+    // mistaken for anything else on screen.
+    //
+    // The colour is unconditional, and has to stay that way: `transition-colors`
+    // above covers `outline-color`, and a button at rest has no outline colour
+    // of its own, so the computed value is `currentColor`. Behind a
+    // `focus-visible:` prefix the ring therefore appeared instantly in the text
+    // colour and only then slid to blue over the duration — the tell was
+    // invisible while this was a near-white neutral and obvious the moment it
+    // became a hue. Stating the colour always means focus only has width and
+    // style left to change, and neither of those transitions.
+    "outline-blue-500 focus-visible:outline-2 focus-visible:outline-offset-2",
     "active:blur-[1.5px]",
     "data-disabled:pointer-events-none"
   ],

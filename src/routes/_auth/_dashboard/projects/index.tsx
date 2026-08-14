@@ -63,7 +63,10 @@ const ERROR_CLASS = "flex items-start gap-3 rounded-xl border border-red-900/60 
 const RETRY_CLASS = [
   "shrink-0 rounded-md border border-neutral-700 px-2.5 py-1 text-sm font-medium",
   "text-foreground transition hover:bg-neutral-800",
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-50"
+  // Colour first and unconditionally: `transition` covers `outline-color` too,
+  // so a ring that gets its colour from the `focus-visible:` prefix fades in
+  // from `currentColor` instead of arriving blue.
+  "outline-blue-500 focus-visible:outline-2 focus-visible:outline-offset-2"
 ].join(" ");
 
 /** Stable keys, so the placeholders are not keyed by array index. */

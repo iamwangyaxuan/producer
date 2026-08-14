@@ -77,22 +77,28 @@ const BUTTON_BASE_CLASS = [
   // flips half way through — the row below would keep taking clicks for 75ms
   // after it had been told to stop.
   "text-sm font-medium transition-colors",
-  "focus-visible:outline-2 focus-visible:outline-offset-2",
+  // The one colour here that does not come in a light and a dark flavour: the
+  // focus ring is the same blue on both, so it stays the single thing on screen
+  // that always means "this is where the keyboard is" instead of borrowing each
+  // theme's own foreground and having to be told apart from it.
+  //
+  // Unconditional, not behind `focus-visible:` — `transition-colors` above
+  // covers `outline-color`, and a ring that only picks up its colour on focus
+  // animates there from `currentColor` while the reader watches.
+  "outline-blue-500 focus-visible:outline-2 focus-visible:outline-offset-2",
   "aria-disabled:pointer-events-none aria-disabled:opacity-60"
 ].join(" ");
 
 const SUBMIT_CLASS = [
   BUTTON_BASE_CLASS,
-  "bg-neutral-900 text-white hover:bg-neutral-800 focus-visible:outline-neutral-900",
-  "dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-white dark:focus-visible:outline-neutral-50"
+  "bg-neutral-900 text-white hover:bg-neutral-800",
+  "dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-white"
 ].join(" ");
 
 const GOOGLE_CLASS = [
   BUTTON_BASE_CLASS,
   "border border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-50",
-  "focus-visible:outline-neutral-900",
-  "dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:hover:bg-neutral-800",
-  "dark:focus-visible:outline-neutral-50"
+  "dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:hover:bg-neutral-800"
 ].join(" ");
 
 function RouteComponent() {

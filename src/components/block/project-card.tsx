@@ -105,9 +105,12 @@ export default function ProjectCard({ id, name, description, image }: ProjectCar
      * fades the menu button in with the fill rather than on its own hover. The
      * focus ring is drawn here but keyed to the link inside, so tabbing to the
      * project outlines the whole card while tabbing on to its menu button does
-     * not — that one draws its own.
+     * not — that one draws its own. Its colour is stated unconditionally for the
+     * reason the button gives: `transition-colors` covers `outline-color`, so a
+     * colour that only arrives with focus animates up from `currentColor` in
+     * full view.
      */
-    <div className="group relative flex h-full flex-col rounded-xl transition-colors hover:bg-neutral-800/60 has-data-popup-open:bg-neutral-800/60 has-[a:focus-visible]:outline-2 has-[a:focus-visible]:outline-offset-2 has-[a:focus-visible]:outline-neutral-50">
+    <div className="group relative flex h-full flex-col rounded-xl outline-blue-500 transition-colors hover:bg-neutral-800/60 has-data-popup-open:bg-neutral-800/60 has-[a:focus-visible]:outline-2 has-[a:focus-visible]:outline-offset-2">
       {/* Rounded on all four corners and clipping its own image, so the cover
           reads as a tile sitting on the card rather than as the card's top
           edge. A fixed ratio, so nothing reflows while covers stream in. */}
