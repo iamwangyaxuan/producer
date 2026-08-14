@@ -1,4 +1,5 @@
 import { Link, useNavigate, useRouter } from "@tanstack/react-router";
+import { useReactFlow, useStore } from "@xyflow/react";
 import { useState } from "react";
 import type { ReactNode } from "react";
 
@@ -40,6 +41,133 @@ export default function StudioToolbar({ projectId, name, children }: StudioToolb
         </>
       ) : null}
     </div>
+  );
+}
+
+/** Every step lands on a multiple of this, so the reading is always a round number. */
+const ZOOM_STEP = 0.05;
+
+/**
+ * Float slack. `1 / 0.05` is `20.000000000000004`, and without a nudge a press
+ * at exactly 100% would round to the step it is already on and do nothing.
+ */
+const ZOOM_EPSILON = 1e-6;
+
+/**
+ * Aligned to the trigger rather than to the strip — unlike {@link POPUP_POSITIONER},
+ * whose `alignOffset` exists to pull the project menu back over the strip's own
+ * padding. This trigger sits in the middle of the strip, where the edge worth
+ * lining up with is its own.
+ */
+const ZOOM_POSITIONER = { align: "start", sideOffset: 14 } as const;
+
+/**
+ * How far in or out the camera is, and the three ways to move it.
+ *
+ * It lands on this strip rather than in a corner of its own, for the reason the
+ * strip exists at all: the canvas *is* the screen, so every panel parked on it
+ * permanently is covering the work. There is already one thing always in view,
+ * and a reading four characters wide can join it for free — where a fourth
+ * floating panel would be a fourth thing to look past.
+ *
+ * The reading comes from a single value out of React Flow's store rather than
+ * from `useViewport`, and this is its own component rather than a number read
+ * up in the route. Both of those are about what re-renders during a gesture:
+ * `useViewport` changes on a pan too, and reading either one in the route would
+ * re-render the whole node graph on every frame of every zoom. Here the only
+ * thing that re-renders is this strip, and only when the zoom can have changed.
+ *
+ * The bounds are read from the store as well, rather than restated here, so
+ * that setting `minZoom`/`maxZoom` on the canvas one day moves the ends of this
+ * control with it instead of leaving two answers to the same question.
+ */
+export function ZoomLevel() {
+  const { zoomTo, fitView } = useReactFlow();
+
+  const zoom = useStore((state) => state.transform[2]);
+  const minZoom = useStore((state) => state.minZoom);
+  const maxZoom = useStore((state) => state.maxZoom);
+  const nodeCount = useStore((state) => state.nodes.length);
+
+  /**
+   * Snapped to the five-percent grid rather than added to wherever we are.
+   * "Fit to screen" lands on whatever fraction the board happens to need — 67%,
+   * 83% — and stepping from there would carry that remainder through every
+   * reading afterwards. Snapping means the first press tidies up and every one
+   * after it moves a clean five.
+   */
+  function step(direction: 1 | -1) {
+    const steps = zoom / ZOOM_STEP;
+    const next =
+      direction > 0 ? Math.floor(steps + ZOOM_EPSILON) + 1 : Math.ceil(steps - ZOOM_EPSILON) - 1;
+
+    // No `duration`: a step is meant to be repeated, and an animation means
+    // every press after the first is measured from a zoom that is still moving.
+    void zoomTo(Math.min(maxZoom, Math.max(minZoom, next * ZOOM_STEP)));
+  }
+
+  return (
+    // `modal={false}` for the reason the project menu gives: a backdrop across
+    // the canvas would put the board out of reach for as long as this is open —
+    // and this is a menu built to be left open.
+    <Menu.Root modal={false}>
+      <Menu.Trigger render={<Button variant="ghost" size="md" className={TRIGGER_CLASS} />}>
+        {/* Fixed width and tabular figures because the strip is anchored on the
+            left: without both, zooming past a digit boundary would slide the
+            trigger's own chevron — the thing being pressed repeatedly — sideways
+            out from under the pointer. */}
+        <span className="min-w-9 text-center tabular-nums">
+          {/* The word the number needs to mean anything, for the reader who has
+              no strip to see it in the context of. */}
+          <span className="sr-only">Zoom </span>
+          {Math.round(zoom * 100)}%
+        </span>
+        <Icon name="expand_more" className="text-base text-neutral-400" />
+      </Menu.Trigger>
+      <Menu.Content positioner={ZOOM_POSITIONER}>
+        {/*
+         * `closeOnClick={false}` on all three. Stepping is done several times in
+         * a row, and a menu that shut after the first press would turn "a bit
+         * smaller" into four trips. Fitting keeps it too, though nobody fits
+         * twice: what follows a fit is usually a step or two to taste, and
+         * closing would take that away to save a press nobody asked to skip.
+         * Escape and a press on the canvas still dismiss it, and the reading in
+         * the trigger stays live above the popup while all this happens.
+         */}
+        <Menu.Item
+          closeOnClick={false}
+          disabled={zoom <= minZoom + ZOOM_EPSILON}
+          onClick={() => step(-1)}
+        >
+          <Icon name="remove" className="text-sm" />
+          Zoom out
+        </Menu.Item>
+        <Menu.Item
+          closeOnClick={false}
+          disabled={zoom >= maxZoom - ZOOM_EPSILON}
+          onClick={() => step(1)}
+        >
+          <Icon name="add" className="text-sm" />
+          Zoom in
+        </Menu.Item>
+
+        <Menu.Separator />
+
+        {/* Inert rather than hidden on an empty board, the way the node menu
+            keeps an action it cannot currently perform: a menu whose contents
+            change shape is a menu nobody learns the position of. The animation
+            is worth it here and not on the steps — this is one move, and a
+            camera that jumps across the board loses the reader. */}
+        <Menu.Item
+          closeOnClick={false}
+          disabled={nodeCount === 0}
+          onClick={() => void fitView({ duration: 200 })}
+        >
+          <Icon name="fit_screen" className="text-sm" />
+          Fit to screen
+        </Menu.Item>
+      </Menu.Content>
+    </Menu.Root>
   );
 }
 
