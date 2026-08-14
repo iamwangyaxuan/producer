@@ -1,11 +1,10 @@
+import type { Modality } from "#/components/block/studio/ai-composer";
 import { aspectRatioValue } from "#/lib/aspect-ratio";
-
 import type {
   GenerationProvider,
   GenerationRequest,
   GenerationResult
 } from "#/server/generation/provider";
-import type { Modality } from "#/components/block/studio/ai-composer";
 
 /**
  * Stand-in results for a generation backend that does not exist yet.

@@ -6,8 +6,8 @@ import type { ControlPosition, Node, NodeProps, NodeTypes } from "@xyflow/react"
 // would outrank them all and quietly restore the stock skin.
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import type Player from "video.js/dist/types/player";
 import { cn } from "tailwind-variants";
+import type Player from "video.js/dist/types/player";
 
 import { ConfirmDialog } from "#/components/block/project-dialogs";
 import type { Modality } from "#/components/block/studio/ai-composer";
@@ -16,6 +16,7 @@ import Icon from "#/components/ui/icon";
 import Progress from "#/components/ui/progress";
 import Skeleton from "#/components/ui/skeleton";
 import { aspectRatioValue } from "#/lib/aspect-ratio";
+import { assetContentUrl, assetFileName } from "#/lib/asset-links";
 
 export type GenerationStatus = "pending" | "ready" | "failed";
 
@@ -27,21 +28,26 @@ export interface GenerationNodeData extends Record<string, unknown> {
   aspectRatio?: string;
   status: GenerationStatus;
   /**
-   * What the media element renders. New results carry the app's own
-   * `/api/assets/{id}/content` URL; documents from before the asset layer
-   * hold the third-party URLs the old stub answered with, and they keep
-   * rendering — this string staying the single seam is what makes that
-   * migration-free.
+   * The asset this node shows, and the only name for it the document keeps —
+   * the URL is derived from it at render time rather than stored beside it.
+   * Absent until the call that creates the asset row answers, which is a
+   * moment the node spends pending.
    */
-  src?: string;
-  /** The asset row behind `src`; absent on pre-asset-layer results. */
   assetId?: string;
   /** How the file came to exist. Absent means an AI generation. */
   source?: "ai" | "upload";
   /**
-   * What `src` serves, e.g. "video/mp4". The serving URL carries no
+   * What the file is called — an upload's own name, or the phrase a model
+   * wrote for a generation. Held here so the node can build a named URL
+   * without a lookup; absent when a generation's naming call failed, where
+   * the fallback chain in `assetTitle` covers it.
+   */
+  title?: string;
+  /**
+   * What the bytes are, e.g. "video/mp4". The serving URL carries no
    * extension, so a player that picks its pipeline by source type has to be
-   * told; absent on pre-asset-layer results, which did have extensions.
+   * told. Written in the same patch that turns the node ready, so it is
+   * absent only while there is nothing to play yet.
    */
   mimeType?: string;
   /**
@@ -71,8 +77,105 @@ export type GenerationNode = Node<GenerationNodeData, "generation">;
  */
 export const DragModeContext = createContext(false);
 
-/** One width for every node, so a canvas of mixed results still reads as a column of cards. */
+/**
+ * What a node can be asked to do about its own failure.
+ *
+ * Context rather than node data for a harder reason than {@link DragModeContext}:
+ * these are functions, and node data is a Yjs record that every other person in
+ * the room receives and every future session reads back. Only the canvas knows
+ * whether a retry is even possible — an upload can only be retried by the tab
+ * still holding the file — so it answers both questions here, per node, and the
+ * document stays a description of results rather than of this tab's abilities.
+ */
+export interface NodeActions {
+  canRetry: (id: string, data: GenerationNodeData) => boolean;
+  retry: (id: string, data: GenerationNodeData) => void;
+}
+
+export const NodeActionsContext = createContext<NodeActions | null>(null);
+
+/**
+ * The same retry, already bound to the node that is rendering — so the failure
+ * notice deep inside a body can offer it without being handed an id and a data
+ * record it has no other use for. `null` when this node has nothing to try
+ * again with.
+ */
+const RetryContext = createContext<(() => void) | null>(null);
+
+/**
+ * Where this node's bytes come from, once there are any.
+ *
+ * Derived from the id rather than stored, which is why nothing needs fetching
+ * or refreshing to render a node: the URL for an asset is a pure function of
+ * its id and never changes.
+ *
+ * The status gate is what that pure function costs. A node is given its
+ * `assetId` when the generation *starts*, so a URL exists for it long before
+ * any byte does — and the serving route answers 404 until the row is ready.
+ * A media element that meets that 404 marks itself broken permanently, because
+ * the URL never changes and so never gives it a second attempt. Withholding
+ * the address until the bytes exist is what keeps the first load the real one.
+ */
+function assetSrc(data: GenerationNodeData) {
+  if (data.status !== "ready" || !data.assetId) return undefined;
+
+  return assetContentUrl(data.assetId, { filename: nodeFileName(data) });
+}
+
+/** The name this node's file carries in its URL and on disk. */
+function nodeFileName(data: GenerationNodeData) {
+  return assetFileName({
+    kind: data.modality,
+    title: data.title ?? null,
+    filename: null,
+    prompt: data.prompt,
+    mimeType: data.mimeType ?? null
+  });
+}
+
+/**
+ * How wide a node is when it has no picture to be the shape of.
+ *
+ * Sound is the only one, and it wants a width the way a paragraph does: the row
+ * has to carry a transport, a clock, and the prompt that is the single thing
+ * telling two players apart. Everything with a picture takes its size from its
+ * own proportions instead — see {@link VISUAL_AREA}.
+ *
+ * Also the last-resort box in `canvas-placement`, for a node whose data has not
+ * arrived but which still has to be something the next one avoids.
+ */
 export const NODE_WIDTH = 320;
+
+/**
+ * Every picture on the board covers the same area, whatever shape it is.
+ *
+ * The rule this replaces was one width for every node, which sounds even and is
+ * not: with width pinned, height follows the ratio alone, so a 3:4 phone photo
+ * stood 427 pixels tall beside a 16:9 still's 180 and a 9:16 clip took three
+ * times the board a landscape one did. At the same zoom on the same canvas, a
+ * page of holiday photos ran out of screen after a couple of files while a page
+ * of stills held four times as many — a difference decided by nothing but which
+ * way the camera was held.
+ *
+ * Equal area is what "the same size" means to the eye, and it is what makes how
+ * much fits at 100% a property of the canvas rather than of the files that
+ * happened to land on it. Written as the square it is equivalent to, because
+ * that is the number worth turning: this is the one dial for how dense a board
+ * is, and everything grows or shrinks in step with it.
+ */
+const VISUAL_AREA = 200 * 200;
+
+/**
+ * No side longer than this, whatever the area works out to.
+ *
+ * Equal area bounds a node only while its proportions are ordinary. A 10:1
+ * panorama comes out 632 pixels wide — and a single file wide enough to push
+ * everything else off the screen is the exact thing this whole rule exists to
+ * stop. The cap takes the long side and lets the short one follow, so the shape
+ * survives and only the area gives way. It does not bite until about 4.4:1,
+ * which nothing reaches without being asked for it.
+ */
+const MAX_VISUAL_SIDE = 420;
 
 /**
  * Out of the way until the pointer is on the node — and, the half that had been
@@ -102,6 +205,34 @@ const REVEAL_ON_HOVER = [
 ].join(" ");
 
 /**
+ * The video transport's version of {@link REVEAL_ON_HOVER}, wanting the same
+ * three things for the same three reasons: hidden until pointed at, not in the
+ * way while hidden, and handed over outright to a pointer that cannot hover.
+ *
+ * The second of those is the one that is easy to skip here. The bottom strip
+ * spans the full width of the node and it swallows the press that starts a node
+ * drag — so a transparent one is a band along the bottom of every clip on the
+ * board that the node cannot be picked up by.
+ *
+ * It parts from the toolbar on focus. The toolbar reveals on `focus-within`,
+ * which is right for two buttons nothing but the keyboard reaches; here an
+ * ordinary mouse press on play leaves that button focused in most browsers, and
+ * `focus-within` would then pin the transport open for the rest of the session
+ * on the first clip anyone started. `:focus-visible` is the same courtesy to the
+ * keyboard without the mouse being able to claim it.
+ *
+ * Both places this is worn — the strip, and the wrapper around the centre button
+ * — are containers of the focusable thing rather than the focusable thing
+ * itself, which is what makes one `has-` rule serve both.
+ */
+const TRANSPORT_ON_HOVER = [
+  "pointer-events-none opacity-0",
+  "group-hover:pointer-events-auto group-hover:opacity-100",
+  "has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100",
+  "pointer-coarse:pointer-events-auto pointer-coarse:opacity-100"
+].join(" ");
+
+/**
  * Sound has no shape of its own; a player is as tall as a player needs to be.
  *
  * Two rows tall rather than one, and the second row is not decoration. The
@@ -118,8 +249,13 @@ export const SOUND_HEIGHT = 88;
  * React Flow fills in `measured` only after it has laid a node out, which has
  * not happened for one added in the tick it is being placed in — and a node
  * whose size reads as zero is a node everything else is happy to be placed on
- * top of. The dimensions are known here anyway: the width is fixed and the
- * height follows from the ratio the result was asked for.
+ * top of. The dimensions are known here anyway: they follow from the ratio the
+ * result was asked for, or that the uploaded file turned out to have.
+ *
+ * Only ever consulted when a node is *born*. A node's size lives on the node
+ * from then on, because the resize handles write to it — so turning
+ * {@link VISUAL_AREA} changes what lands next and leaves every board already
+ * arranged exactly as its author left it.
  */
 export function nodeSize(data: GenerationNodeData) {
   if (data.modality === "voice" || data.modality === "music") {
@@ -128,7 +264,21 @@ export function nodeSize(data: GenerationNodeData) {
 
   const ratio = aspectRatioValue(data.aspectRatio) ?? 1;
 
-  return { width: NODE_WIDTH, height: Math.round(NODE_WIDTH / ratio) };
+  // Both sides from the area, rather than one from the other: deriving the
+  // height from an already-rounded width walks the area off by a percent or so
+  // on the narrow shapes, and these coming out equal is the entire point.
+  let width = Math.sqrt(VISUAL_AREA * ratio);
+  let height = Math.sqrt(VISUAL_AREA / ratio);
+
+  if (width > MAX_VISUAL_SIDE) {
+    width = MAX_VISUAL_SIDE;
+    height = MAX_VISUAL_SIDE / ratio;
+  } else if (height > MAX_VISUAL_SIDE) {
+    height = MAX_VISUAL_SIDE;
+    width = MAX_VISUAL_SIDE * ratio;
+  }
+
+  return { width: Math.round(width), height: Math.round(height) };
 }
 
 /**
@@ -197,6 +347,13 @@ export function isVisual(data: GenerationNodeData) {
 export default function GenerationNodeView({ id, data, selected }: NodeProps<GenerationNode>) {
   const visual = isVisual(data);
   const dragMode = useContext(DragModeContext);
+  const actions = useContext(NodeActionsContext);
+
+  // Asked only of a node that actually failed: `canRetry` reaches into what
+  // this tab is holding, and there is nothing to ask about a node that is
+  // still running or already finished.
+  const retry =
+    data.status === "failed" && actions?.canRetry(id, data) ? () => actions.retry(id, data) : null;
 
   return (
     // `group` so the corner handles can wait for the pointer, and `size-full`
@@ -226,13 +383,15 @@ export default function GenerationNodeView({ id, data, selected }: NodeProps<Gen
           selected && "ring-1 ring-[rgba(218,220,224,0.35)]"
         )}
       >
-        {data.modality === "video" ? (
-          <VideoBody data={data} />
-        ) : visual ? (
-          <VisualBody data={data} />
-        ) : (
-          <SoundBody data={data} />
-        )}
+        <RetryContext value={retry}>
+          {data.modality === "video" ? (
+            <VideoBody data={data} />
+          ) : visual ? (
+            <VisualBody data={data} />
+          ) : (
+            <SoundBody data={data} />
+          )}
+        </RetryContext>
       </div>
 
       <TypeBadge modality={data.modality} />
@@ -278,6 +437,7 @@ function VisualBody({ data }: { data: GenerationNodeData }) {
   const [revealed, setRevealed] = useState(false);
   const [broken, setBroken] = useState(false);
 
+  const src = assetSrc(data);
   const failed = data.status === "failed" || broken;
 
   return (
@@ -289,9 +449,9 @@ function VisualBody({ data }: { data: GenerationNodeData }) {
 
       {failed ? <Failure /> : null}
 
-      {data.src && !failed ? (
+      {src && !failed ? (
         <img
-          src={data.src}
+          src={src}
           alt={data.prompt}
           // Browsers let an image be dragged out of the page on its own, which
           // puts a ghost under the cursor and takes the pointer away from the
@@ -307,19 +467,28 @@ function VisualBody({ data }: { data: GenerationNodeData }) {
 }
 
 /**
- * A clip at rest, with a transport of its own.
+ * A clip at rest, with a transport of its own — one that stays off the picture
+ * until the pointer is on the node; see {@link TRANSPORT_ON_HOVER}.
  *
  * Nothing plays until asked: a board where every clip is running is a board
- * where nothing can be looked at, and because playback now begins with a
- * press, sound arrives with it — the `muted` that autoplay demanded is gone,
- * and the mute toggle is a preference again rather than a workaround.
+ * where nothing can be looked at, and because playback now begins with a press,
+ * sound arrives with it — the `muted` that autoplay demanded is gone, and with
+ * it the mute toggle, which without an autoplay to work around was never a
+ * control so much as an apology for one.
+ *
+ * The transport parts company with the audio player's here, and the picture is
+ * the whole reason. A clip has a frame to press, so the play control goes where
+ * every player anyone has used puts it — the middle, over the picture, with the
+ * entire frame answering to it — and the strip along the bottom is left saying
+ * only where in the clip we are. The audio player keeps its play button in the
+ * row because a row is all it has.
  *
  * video.js runs the playback — source pipelines, buffering, the parts worth
- * not rebuilding — but draws nothing: `controls: false` strips its chrome,
- * and the transport is this component's own, in the same shape as the audio
- * player's, so the two players read as one family instead of a library skin
- * fighting the canvas. Double-click is stripped too (`userActions`): video.js
- * would answer it with fullscreen, which on a board tile is a trapdoor.
+ * not rebuilding — but draws nothing: `controls: false` strips its chrome, and
+ * the transport is this component's own, so the player reads as part of the
+ * canvas instead of a library skin fighting it. Double-click is stripped too
+ * (`userActions`): video.js would answer it with fullscreen, which on a board
+ * tile is a trapdoor.
  *
  * The library is imported on demand inside the effect because it expects a
  * document to exist, and this module is also loaded while the route renders
@@ -328,16 +497,17 @@ function VisualBody({ data }: { data: GenerationNodeData }) {
 function VideoBody({ data }: { data: GenerationNodeData }) {
   const host = useRef<HTMLDivElement>(null);
   const playerRef = useRef<Player | null>(null);
+  const dragMode = useContext(DragModeContext);
 
   const [revealed, setRevealed] = useState(false);
   const [broken, setBroken] = useState(false);
   const [playing, setPlaying] = useState(false);
-  const [muted, setMuted] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [total, setTotal] = useState(0);
+  const [scrubbing, setScrubbing] = useState(false);
 
   const failed = data.status === "failed" || broken;
-  const src = data.src;
+  const src = assetSrc(data);
   const mimeType = data.mimeType;
 
   useEffect(() => {
@@ -355,50 +525,52 @@ function VideoBody({ data }: { data: GenerationNodeData }) {
     let player: Player | null = null;
     let cancelled = false;
 
-    void import("video.js").then(({ default: videojs }) => {
-      const container = host.current;
+    void import("video.js")
+      .then(({ default: videojs }) => {
+        const container = host.current;
 
-      if (cancelled || !container) return;
+        if (cancelled || !container) return;
 
-      // video.js replaces the element it is handed, so it gets one of its
-      // own creation rather than anything React is reconciling.
-      const element = document.createElement("video-js");
-      element.classList.add("canvas-video");
-      container.appendChild(element);
+        // video.js replaces the element it is handed, so it gets one of its
+        // own creation rather than anything React is reconciling.
+        const element = document.createElement("video-js");
+        element.classList.add("canvas-video");
+        container.appendChild(element);
 
-      player = videojs(element, {
-        // The engine only — the transport below is rendered by React.
-        controls: false,
-        autoplay: false,
-        preload: "auto",
-        fill: true,
-        playsinline: true,
-        // Double-click would go fullscreen; nothing on a canvas tile should.
-        userActions: { doubleClick: false },
-        // The serving URL has no extension, so the type is stated outright;
-        // older nodes predate the field and were always mp4 samples.
-        sources: [{ src, type: mimeType ?? "video/mp4" }]
+        player = videojs(element, {
+          // The engine only — the transport below is rendered by React.
+          controls: false,
+          autoplay: false,
+          preload: "auto",
+          fill: true,
+          playsinline: true,
+          // Double-click would go fullscreen; nothing on a canvas tile should.
+          userActions: { doubleClick: false },
+          // The serving URL has no extension, so the type is stated outright —
+          // it lands in the same patch as the `ready` that produced this src.
+          sources: [{ src, type: mimeType }]
+        });
+
+        // The reveal waits for a decodable first frame, not just metadata: a
+        // clip that is not playing is a still, and the still must exist before
+        // the skeleton hands over to it.
+        player.one("loadeddata", () => afterFirstPaint(() => setRevealed(true)));
+        player.on("durationchange", () => setTotal(player?.duration() ?? 0));
+        player.on("timeupdate", () => setElapsed(player?.currentTime() ?? 0));
+        player.on("play", () => setPlaying(true));
+        player.on("pause", () => setPlaying(false));
+        player.on("ended", () => setPlaying(false));
+        player.on("error", () => setBroken(true));
+
+        playerRef.current = player;
+      })
+      .catch(() => {
+        // The chunk did not load — offline, or a deploy that moved it. Without
+        // this the node would sit on its skeleton forever, waiting for a player
+        // that is never coming; the failure state at least says so and the
+        // toolbar's download still works.
+        if (!cancelled) setBroken(true);
       });
-
-      // The reveal waits for a decodable first frame, not just metadata: a
-      // clip that is not playing is a still, and the still must exist before
-      // the skeleton hands over to it.
-      player.one("loadeddata", () => afterFirstPaint(() => setRevealed(true)));
-      player.on("durationchange", () => setTotal(player?.duration() ?? 0));
-      player.on("timeupdate", () => setElapsed(player?.currentTime() ?? 0));
-      player.on("play", () => setPlaying(true));
-      player.on("pause", () => setPlaying(false));
-      player.on("ended", () => setPlaying(false));
-      player.on("error", () => setBroken(true));
-
-      playerRef.current = player;
-    }).catch(() => {
-      // The chunk did not load — offline, or a deploy that moved it. Without
-      // this the node would sit on its skeleton forever, waiting for a player
-      // that is never coming; the failure state at least says so and the
-      // toolbar's download still works.
-      if (!cancelled) setBroken(true);
-    });
 
     return () => {
       cancelled = true;
@@ -407,6 +579,34 @@ function VideoBody({ data }: { data: GenerationNodeData }) {
       player = null;
     };
   }, [src, mimeType]);
+
+  /**
+   * `timeupdate` is the wrong clock to draw a bar with. It fires about four
+   * times a second, so the indicator does not travel — it ticks, in steps that
+   * are eight pixels wide on a ten-second clip and only get wider the shorter
+   * the clip is.
+   *
+   * The cheap fix is a CSS transition on the width, and it is wrong in the way
+   * that matters: a transition smooths the steps by predicting the next one,
+   * and the prediction fails exactly when the truth is worth having — a stall,
+   * a seek, a rate change — leaving the bar gliding confidently to a place the
+   * clip is not. Asking the player where it is, once per frame, cannot be wrong
+   * about where the clip is, because it is asking rather than guessing.
+   *
+   * Only while playing. A paused clip has nothing to interpolate, `timeupdate`
+   * still covers the one move it can make, and a frame loop per node on a board
+   * of clips is a cost worth paying only for the ones actually running.
+   */
+  useEffect(() => {
+    if (!playing) return;
+
+    let frame = requestAnimationFrame(function tick() {
+      setElapsed(playerRef.current?.currentTime() ?? 0);
+      frame = requestAnimationFrame(tick);
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [playing]);
 
   function toggle() {
     const player = playerRef.current;
@@ -420,8 +620,9 @@ function VideoBody({ data }: { data: GenerationNodeData }) {
   /**
    * The bar seeks by fraction of its own width, held through the drag by
    * pointer capture — the pointer can wander off the strip mid-scrub without
-   * the scrub letting go. `elapsed` is set here as well as by `timeupdate`,
-   * which fires too coarsely for a thumb being dragged to feel attached.
+   * the scrub letting go. `elapsed` is set here rather than left to the frame
+   * loop above, which is not running on the paused clip that is the usual thing
+   * to be scrubbing.
    */
   function seek(event: ReactPointerEvent<HTMLDivElement>) {
     const player = playerRef.current;
@@ -455,44 +656,133 @@ function VideoBody({ data }: { data: GenerationNodeData }) {
 
       {src && !failed ? (
         <>
+          {/*
+           * The picture is the switch. Every player anyone has used answers a
+           * press on the frame with play or pause, and on a tile this size that
+           * is worth more than it is anywhere else: the button it saves aiming
+           * at is thirty-six pixels wide at full zoom and proportionally less at
+           * every zoom below it.
+           *
+           * Not a `<button>` and not in the tab order — the centre control below
+           * is the same action, already named for the keyboard and for a screen
+           * reader, and two tab stops per clip on a board of them is a worse
+           * canvas than one. This layer is the mouse's shortcut to it, which is
+           * also why it is `aria-hidden`.
+           *
+           * `onPointerDown` is deliberately left alone: that press is what
+           * selects the node, and what drags it while the space bar is down.
+           * Which is the same reason the toggle asks first — in drag mode a
+           * press here opens a move, and a move that happens to end where it
+           * began must not also have started the clip.
+           */}
+          <div
+            aria-hidden
+            className={cn(
+              "absolute inset-0",
+              // The one place on this canvas a pointer cursor is not a promise
+              // being broken: at rest the node says `cursor-default` precisely
+              // because nothing answers a plain click, and here something does.
+              !dragMode && "cursor-pointer"
+            )}
+            onClick={() => {
+              if (!dragMode) toggle();
+            }}
+          />
+
+          {/*
+           * The same action with a face on it, and the only half of the pair a
+           * keyboard can reach.
+           *
+           * The reveal rides a wrapper rather than the button itself, for a
+           * reason that is entirely mechanical: `transition-opacity` and the
+           * button's own `transition-colors` are the same CSS property, and the
+           * button merges its class list — so a fade added there does not join
+           * the colour transition, it deletes it, and the button stops answering
+           * hover. The wrapper shrink-wraps the button, so unlike a layer
+           * spanning the frame it costs nothing to hit-test around — and it
+           * being the container is also what lets the `has-` focus rule in
+           * {@link TRANSPORT_ON_HOVER} see the button light up.
+           */}
           <div
             className={cn(
-              // The scrim is what keeps white controls legible over bright
-              // footage; it fades with the controller so a playing clip is
-              // just the clip. Paused, it stays — a tile with no visible way
-              // to start is a dead picture.
-              "absolute inset-x-0 bottom-0 flex items-center gap-3 bg-gradient-to-t from-black/60 to-transparent p-3 pt-6 transition-opacity duration-150",
-              playing ? "opacity-0 group-hover:opacity-100" : "opacity-100"
+              "absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 transition-opacity duration-150",
+              TRANSPORT_ON_HOVER
+            )}
+          >
+            <Button
+              icon
+              shape="circle"
+              size="lg"
+              className="nodrag"
+              aria-label={playing ? "Pause" : "Play"}
+              // Same rule as the strip below: a control is not something to take
+              // hold of, and without this a press here would drag the node out
+              // from under it while the space bar is down.
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={toggle}
+            >
+              <Icon name={playing ? "pause" : "play_arrow"} className="text-lg" />
+            </Button>
+          </div>
+
+          <div
+            className={cn(
+              // The scrim is not decoration — it is what keeps white controls
+              // legible over bright footage — so it lives and dies with them,
+              // and what they both wait for is the pointer, playing or paused
+              // alike. A paused tile used to keep the transport up permanently
+              // so that there was always something visible to press; the cost
+              // was a board of clips wearing a row of black bars across the part
+              // of the picture nothing else was covering.
+              //
+              // What is left is where we are and how much is left — the two
+              // things a still frame cannot say for itself. Play left for the
+              // middle of the picture, and mute left with the autoplay that was
+              // the only reason for it.
+              //
+              // The bar sits under them and hard against the bottom edge, where
+              // a progress bar belongs: the only padding beneath it is the
+              // seek's own grab area, so the strip reads as the clip's own
+              // baseline rather than as a panel with a line floating in it.
+              "absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent px-3 pt-6 transition-opacity duration-150",
+              // A scrub holds the pointer through pointer capture, which is
+              // exactly the gesture that carries it off the node — and hover is
+              // not a thing to bet a held gesture on. Pinned while it lasts, so
+              // the strip cannot fade out from under the thumb dragging it.
+              scrubbing ? "pointer-events-auto opacity-100" : TRANSPORT_ON_HOVER
             )}
             // A control, not something to take hold of — same rule as the
             // toolbar: without this a press here would start dragging the
             // node while the space bar is down.
             onPointerDown={(event) => event.stopPropagation()}
           >
-            <Button
-              icon
-              shape="circle"
-              size="sm"
-              className="nodrag shrink-0"
-              aria-label={playing ? "Pause" : "Play"}
-              onClick={toggle}
-            >
-              <Icon name={playing ? "pause" : "play_arrow"} className="text-sm" />
-            </Button>
+            {/* Counting up on the left, counting down on the right, and the
+                sign is what says which is which — two bare timestamps side by
+                side are a riddle. `tabular-nums` so neither of them shifts the
+                other about as the digits change. */}
+            <div className="flex items-baseline justify-between gap-2 text-[10px] leading-4 text-neutral-200 tabular-nums">
+              <span>{clock(elapsed)}</span>
+              <span>-{clock(total > 0 ? total - elapsed : 0)}</span>
+            </div>
 
             {/* Padded well past the 4px it draws at, because a seek target is
                 aimed at with a fingertip's precision, not a hairline's. The
                 bar itself only displays; interpreting a press as a seek is
                 this wrapper's job. */}
             <div
-              className="nodrag min-w-0 flex-1 cursor-pointer py-2"
+              className="nodrag cursor-pointer py-2"
               onPointerDown={(event) => {
                 event.currentTarget.setPointerCapture(event.pointerId);
+                setScrubbing(true);
                 seek(event);
               }}
               onPointerMove={(event) => {
                 if (event.currentTarget.hasPointerCapture(event.pointerId)) seek(event);
               }}
+              // Capture is what a scrub *is* here, so losing it is the one signal
+              // that covers every way one ends — release, cancel, or the browser
+              // taking it back — without three handlers agreeing on the same flag.
+              onLostPointerCapture={() => setScrubbing(false)}
             >
               <Progress
                 value={elapsed}
@@ -505,28 +795,6 @@ function VideoBody({ data }: { data: GenerationNodeData }) {
                 indicatorClassName="bg-white/90"
               />
             </div>
-
-            <span className="shrink-0 text-[10px] leading-4 text-neutral-200 tabular-nums">
-              {clock(total > 0 ? total - elapsed : 0)}
-            </span>
-
-            <Button
-              icon
-              variant="ghost"
-              size="sm"
-              className="nodrag shrink-0 text-white hover:bg-white/15 hover:text-white"
-              aria-label={muted ? "Unmute" : "Mute"}
-              onClick={() => {
-                const player = playerRef.current;
-
-                if (!player) return;
-
-                player.muted(!player.muted());
-                setMuted(player.muted() ?? false);
-              }}
-            >
-              <Icon name={muted ? "volume_off" : "volume_up"} className="text-sm" />
-            </Button>
           </div>
         </>
       ) : null}
@@ -543,6 +811,7 @@ function SoundBody({ data }: { data: GenerationNodeData }) {
   const [elapsed, setElapsed] = useState(0);
   const [total, setTotal] = useState(0);
 
+  const src = assetSrc(data);
   const failed = data.status === "failed" || broken;
   const progress = total > 0 ? (elapsed / total) * 100 : 0;
 
@@ -561,7 +830,7 @@ function SoundBody({ data }: { data: GenerationNodeData }) {
 
       {failed ? <Failure /> : null}
 
-      {data.src && !failed ? (
+      {src && !failed ? (
         <div
           className={cn(
             // Opaque, and specifically the colour the skeleton rests at. A film
@@ -582,7 +851,7 @@ function SoundBody({ data }: { data: GenerationNodeData }) {
         >
           <audio
             ref={audio}
-            src={data.src}
+            src={src}
             preload="metadata"
             onLoadedMetadata={(event) => {
               setTotal(event.currentTarget.duration);
@@ -682,11 +951,17 @@ function fileName(data: GenerationNodeData, url: string, type: string) {
   return `${stem}.${fromUrl ?? EXTENSIONS[type] ?? "bin"}`;
 }
 
-function saveAs(href: string, name: string) {
+/**
+ * `name` is omitted for a cross-origin link, where the attribute would be
+ * ignored anyway and the `Content-Disposition` on the response is what names
+ * the file. Setting it there is not merely useless — a `download` the browser
+ * refuses to honour turns the click into a navigation.
+ */
+function saveAs(href: string, name?: string) {
   const anchor = document.createElement("a");
 
   anchor.href = href;
-  anchor.download = name;
+  if (name !== undefined) anchor.download = name;
   anchor.rel = "noreferrer";
   anchor.click();
 }
@@ -708,22 +983,32 @@ function saveAs(href: string, name: string) {
 function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
   const { deleteElements } = useReactFlow();
 
+  const src = assetSrc(data);
+
   const [confirming, setConfirming] = useState(false);
   const [saving, setSaving] = useState(false);
 
   async function download() {
-    const src = data.src;
-
     if (!src || saving) return;
 
     setSaving(true);
 
     try {
-      // Fetched rather than linked. These files come from other origins, and
-      // there the `download` attribute is ignored outright: the browser
-      // navigates to the media instead of saving it, and what lands on the disk
-      // is named after the URL. A blob is same-origin by the time the anchor
-      // sees it, so both the save and the name survive.
+      if (data.assetId) {
+        // Same origin, so the serving route's own `?download=1` does all of
+        // it: it answers with `Content-Disposition: attachment` named after
+        // the row's filename, and the browser saves rather than navigates.
+        // Nothing here has to read the bytes to rename them.
+        saveAs(assetContentUrl(data.assetId, { filename: nodeFileName(data), download: true }));
+
+        return;
+      }
+
+      // No asset row: a document from before the asset layer, whose `src` is
+      // some other origin's URL. There the `download` attribute is ignored —
+      // the browser navigates to the media instead of saving it, and what lands
+      // on the disk is named after the URL — so the bytes are pulled through a
+      // blob, which is same-origin by the time the anchor sees it.
       const response = await fetch(src);
 
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);
@@ -798,7 +1083,7 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
           // action that is fully opaque.
           className="text-black hover:bg-white hover:text-black"
           // Nothing to save until the result has arrived.
-          disabled={!data.src}
+          disabled={!src}
           pending={saving}
           onClick={() => void download()}
         >
@@ -809,10 +1094,20 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
           variant="ghost"
           size="sm"
           aria-label="Delete"
-          // Black like its neighbour — the strip speaks with one voice, and
-          // the destructive warning belongs to the confirm dialog that always
-          // follows this press, not to the icon.
-          className="text-black hover:bg-white hover:text-black"
+          // The one action on this strip that cannot be taken back, and the
+          // only reason it is not black like its neighbour.
+          //
+          // Not the app's own `red-400` though: that is destructive ink for the
+          // dark menus it was picked on, and against this near-white glass it
+          // measures 2.9:1 — a tint, not a warning. `red-600` is the darkest red
+          // the theme exposes and reads at 4.8:1 on the solid white the hover
+          // lifts it to.
+          //
+          // The strip is only three-fifths white, so over dark footage the ink
+          // still has less to work with than black did. What carries the meaning
+          // there is the glyph, which has not changed; the colour is the second
+          // telling, and the confirm dialog is the third.
+          className="text-red-600 hover:bg-white hover:text-red-600"
           onClick={() => setConfirming(true)}
         >
           <Icon name="delete" className="text-sm" />
@@ -1060,11 +1355,34 @@ function ResizeHandles({ visual }: { visual: boolean }) {
 }
 
 /** Opaque for the reason the player is: a node you can see the canvas through is not a node. */
+/**
+ * What a node says when there is nothing to show, and — when this tab can do
+ * something about it — the one action worth offering there.
+ *
+ * On one line rather than stacked, because the sound node is 88px tall and a
+ * second row would not fit in it. `nodrag` and the stopped propagation are
+ * what keep the press from reaching React Flow, which would otherwise read it
+ * as picking the node up.
+ */
 function Failure() {
+  const retry = useContext(RetryContext);
+
   return (
     <div className="absolute inset-0 flex items-center justify-center gap-2 bg-[#1a1b1d] text-[11px] leading-4 text-neutral-400">
       <Icon name="error" className="text-sm" />
       Could not load
+      {retry ? (
+        <button
+          type="button"
+          className="nodrag cursor-pointer underline underline-offset-2 hover:text-neutral-200"
+          onClick={(event) => {
+            event.stopPropagation();
+            retry();
+          }}
+        >
+          Try again
+        </button>
+      ) : null}
     </div>
   );
 }

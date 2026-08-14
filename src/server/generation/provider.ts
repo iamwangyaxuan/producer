@@ -1,5 +1,5 @@
 import type { Modality } from "#/components/block/studio/ai-composer";
-
+import type { AssetKind } from "#/db/schema";
 import { sampleProvider } from "#/server/generation/sample-provider";
 
 /**
@@ -10,6 +10,25 @@ import { sampleProvider } from "#/server/generation/sample-provider";
  * else.
  */
 
+/**
+ * A file the prompt refers to, as something a vendor's API can actually reach.
+ *
+ * The URL is presigned and short-lived, which is the whole reason it is minted
+ * server-side and passed down rather than assembled from an asset id: the
+ * provider fetches from its own infrastructure, carrying none of this app's
+ * cookies, so anything requiring a session would come back a 404 to it. That
+ * also makes this the point where bytes leave the tenant boundary — the link
+ * works for whoever holds it until it expires.
+ */
+export interface GenerationReference {
+  url: string;
+  /** What the URL answers with, so a vendor that routes by type knows before fetching. */
+  mimeType: string;
+  kind: AssetKind;
+  /** Slot the input fills, e.g. "source_image" — null when unlabelled. */
+  role: string | null;
+}
+
 export interface GenerationRequest {
   modality: Modality;
   prompt: string;
@@ -19,6 +38,8 @@ export interface GenerationRequest {
   aspectRatio?: string;
   /** Requested seconds, video only. */
   duration?: number;
+  /** Files the prompt was written against, in the order they were attached. */
+  references: readonly GenerationReference[];
 }
 
 export interface GenerationResult {
