@@ -1,10 +1,8 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { z } from "zod";
 
 import { getDB, schema } from "#/db";
 import { auth } from "#/lib/auth";
-
-const assetIdShape = z.uuid();
+import { canonicalId } from "#/lib/ids";
 
 export type AssetRow = typeof schema.asset.$inferSelect;
 
@@ -31,11 +29,9 @@ export async function requireAssetAccess(
   headers: Headers,
   assetId: string
 ): Promise<AssetAccess | null> {
-  // Same shape guard as canvas access: a malformed literal against a `uuid`
-  // column makes Postgres raise instead of returning no rows, and every id
-  // this app mints is lowercase, so anything else can be refused unqueried.
-  if (assetId !== assetId.toLowerCase()) return null;
-  if (!assetIdShape.safeParse(assetId).success) return null;
+  // Same shared shape gate as canvas access — lowercase uuid, refused before
+  // any query; see `canonicalId` for why refusal beats normalizing.
+  if (!canonicalId.safeParse(assetId).success) return null;
 
   const session = await auth.api.getSession({ headers });
   const activeOrganizationId = session?.session.activeOrganizationId;

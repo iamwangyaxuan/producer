@@ -5,6 +5,7 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
 import { getDB, schema } from "#/db";
+import { canonicalId } from "#/lib/ids";
 
 import { auth } from "./auth";
 
@@ -158,13 +159,13 @@ export interface ProjectDetail {
  * Unlike the writes further down, the id is not rejected as malformed before the
  * handler runs. It arrives straight out of the URL, so a mistyped path has to
  * reach the same "no such project" answer as a well-formed id matching nothing,
- * rather than an error screen. The shape is still checked inside, because a
- * malformed literal compared against a `uuid` column makes Postgres raise
- * instead of returning no rows.
+ * rather than an error screen. The shape is still checked inside, with the same
+ * `canonicalId` every other entrance uses: an uppercased id must answer "no
+ * such project" *here* too, or the studio shell loads while the canvas socket,
+ * generation and upload — whose gates all refuse it — answer 401 for the same
+ * URL.
  */
 const projectDetailInput = z.object({ id: z.string() });
-
-const projectIdShape = z.uuid();
 
 /**
  * The single-project counterpart of the list read, scoped the same way: the
@@ -177,7 +178,7 @@ const projectIdShape = z.uuid();
 export const fetchProject = createServerFn({ method: "GET" })
   .validator(projectDetailInput)
   .handler(async ({ data }): Promise<ProjectDetail | null> => {
-    if (!projectIdShape.safeParse(data.id).success) return null;
+    if (!canonicalId.safeParse(data.id).success) return null;
 
     const session = await auth.api.getSession({ headers: getRequest().headers });
     const activeOrganizationId = session?.session.activeOrganizationId;
