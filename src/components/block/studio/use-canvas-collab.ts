@@ -64,11 +64,36 @@ const GESTURE_WRITE_MS = 60;
  * clock rather than on presence: awareness is rebuilt empty when the room
  * wakes from hibernation, so "the creator is not in awareness" routinely
  * describes a perfectly live tab — but "this has been pending for minutes"
- * does not.
+ * does not. While the owning tab lives, it renews `requestedAt` every minute
+ * (uploads and generations both), so only genuinely abandoned work ever ages
+ * past this.
  */
 const GENERATION_TIMEOUT_MS = 120_000;
 
 const ORPHAN_SWEEP_MS = 5_000;
+
+/**
+ * How many sweep ticks a pending node must sit unmoved *and already stale*
+ * under this tab's watch before it may be declared failed — a full timeout's
+ * worth. Counted in ticks rather than wall time because a suspended tab's
+ * wall clock keeps running while it observes nothing: sleep a laptop through
+ * a completion and a wall-clock watch would shoot the finished node on the
+ * first tick after waking, before the dead socket is even noticed (the
+ * provider has no silent link detection — `synced` stays true until the
+ * browser reports the close). Ticks only accrue while the sweep actually
+ * runs, and only once the node is stale by its own clock — a node kept fresh
+ * by heartbeats must not bank ticks against the day its age finally lapses —
+ * so a verdict lands roughly two timeouts after the last heartbeat, never on
+ * a wake-up's first look.
+ */
+const WATCH_TICKS = GENERATION_TIMEOUT_MS / ORPHAN_SWEEP_MS;
+
+/**
+ * A gap between consecutive sweep ticks that no healthy interval produces:
+ * past it, this tab was suspended or frozen rather than watching, and
+ * whatever the watch accumulated describes a world it stopped seeing.
+ */
+const WATCH_GAP_RESET_MS = ORPHAN_SWEEP_MS * 3;
 
 /**
  * How often this tab re-announces itself through awareness. Well under the
@@ -341,15 +366,29 @@ export function useCanvasCollab({
   }
 
   /**
-   * The watchdog for generations whose tab has gone. Judged purely on age:
-   * every pending node carries the time it was asked for, and one that has
-   * been pending far past any plausible request is a skeleton nobody is
-   * coming back for. The tab actually running the request is excused however
-   * long it takes — its patch, whenever it lands, overwrites a premature
-   * verdict anyway, since both write the same data record. The write is
-   * idempotent, so several machines noticing at once agree rather than race.
+   * The watchdog for generations whose tab has gone. Two clocks must agree
+   * before anything is shot: the node's own `requestedAt` must be a timeout
+   * stale, *and* this tab must have watched it sit unmoved through a full
+   * timeout's worth of sweep ticks. The second condition is what survives
+   * both clock skew — a machine running minutes fast sees every fresh node
+   * as ancient by the first test alone — and suspension, where wall time
+   * passes but nothing was observed (see `WATCH_TICKS`). Since the owning
+   * tab renews `requestedAt` every minute while its request lives, any
+   * movement restarts the watch.
+   *
+   * The verdict is written through the same read-modify-write merge as every
+   * data patch, so it keeps the node's `assetId` — but a verdict truly
+   * concurrent with the completion patch is still whole-record
+   * last-writer-wins, settled by client id, not by arrival order. The double
+   * requirement makes that window a failure of last resort, not a race the
+   * design leans on.
    */
   useEffect(() => {
+    /** What this tab has itself seen of each pending node: the last `requestedAt` it observed, and how many stale ticks it has sat unmoved. */
+    const watched = new Map<string, { requestedAt: number | undefined; ticks: number }>();
+
+    let lastTickAt = Date.now();
+
     const sweep = setInterval(() => {
       const current = session.current;
 
@@ -357,14 +396,50 @@ export function useCanvasCollab({
 
       const now = Date.now();
 
+      // Ticks skipped — suspension, a frozen tab, an unsynced stretch that
+      // early-returned above — mean nothing was observed; a watch matured
+      // while not watching is exactly the false verdict this exists to
+      // avoid, so it starts over. (A socket that dies *silently* still gets
+      // fresh ticks against a frozen replica — `synced` only flips on a
+      // reported close — but that verdict needs two further timeouts of
+      // silence, and the owner's completion patch merges back over it when
+      // the link resumes.)
+      if (now - lastTickAt > WATCH_GAP_RESET_MS) watched.clear();
+      lastTickAt = now;
+
+      const pending = new Set<string>();
+
       for (const [id, data] of current.nodeData.entries()) {
         if (data.status !== "pending") continue;
+
+        pending.add(id);
+
         if (generating.current?.(id)) continue;
+
+        // Movement is the owner's heartbeat, whatever the clocks say; any
+        // change to `requestedAt` restarts this tab's watch.
+        const seen = watched.get(id);
+        if (!seen || seen.requestedAt !== data.requestedAt) {
+          watched.set(id, { requestedAt: data.requestedAt, ticks: 0 });
+          continue;
+        }
+
+        // Fresh by its own clock: no tick accrues, or a node kept alive by
+        // heartbeats would bank ticks and be shot the moment its age lapsed.
         if (data.requestedAt !== undefined && now - data.requestedAt < GENERATION_TIMEOUT_MS) {
           continue;
         }
 
+        seen.ticks++;
+
+        if (seen.ticks < WATCH_TICKS) continue;
+
         patchNodeData(id, { status: "failed" });
+      }
+
+      // Nodes that resolved or left take their bookkeeping with them.
+      for (const id of watched.keys()) {
+        if (!pending.has(id)) watched.delete(id);
       }
     }, ORPHAN_SWEEP_MS);
 
