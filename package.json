@@ -21,6 +21,7 @@
     "format": "oxfmt"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
     "@base-ui/react": "^1.7.0",
     "@better-auth/scim": "1.6.26",
     "@better-auth/sso": "1.6.26",
@@ -38,6 +39,12 @@
     "@tanstack/react-start": "latest",
     "@tanstack/react-store": "latest",
     "@tanstack/store": "latest",
+    "@tiptap/core": "^3.30.1",
+    "@tiptap/extension-placeholder": "^3.30.1",
+    "@tiptap/pm": "^3.30.1",
+    "@tiptap/react": "^3.30.1",
+    "@tiptap/starter-kit": "^3.30.1",
+    "@tiptap/suggestion": "^3.30.1",
     "@xyflow/react": "^12.11.2",
     "aws4fetch": "^1.0.20",
     "better-auth": "^1.6.26",
