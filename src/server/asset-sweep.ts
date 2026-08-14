@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 
 import { getDB, schema } from "#/db";
 
@@ -23,6 +23,11 @@ import { getDB, schema } from "#/db";
  *     had already landed.
  *
  * Nothing here touches a `ready` row: those are the live assets.
+ *
+ * It is also the shape organization teardown will take, whenever the app
+ * grows that action — the `restrict` on `asset.organizationId` demands the
+ * rows go first, and the answer is to tombstone them and let this drain them,
+ * never to cascade rows away and strand every object they named.
  */
 
 /**
@@ -96,17 +101,4 @@ export async function sweepAssets(): Promise<SweepResult> {
   }
 
   return { collected: collected.length, failures };
-}
-
-/**
- * Organization teardown, which the `restrict` on `asset.organizationId`
- * requires before Postgres will let an organization go. Exported for the day
- * the app grows that action: tombstone everything, then let the sweep drain
- * it, rather than cascading rows away and stranding every object they named.
- */
-export async function tombstoneOrganizationAssets(organizationId: string) {
-  await getDB()
-    .update(schema.asset)
-    .set({ deletedAt: sql`now()` })
-    .where(and(eq(schema.asset.organizationId, organizationId), isNull(schema.asset.deletedAt)));
 }

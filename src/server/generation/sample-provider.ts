@@ -1,5 +1,6 @@
-import type { Modality } from "#/components/block/studio/ai-composer";
+import type { AssetKind } from "#/db/schema";
 import { aspectRatioValue } from "#/lib/aspect-ratio";
+import { wait } from "#/lib/retry";
 import type {
   GenerationProvider,
   GenerationRequest,
@@ -60,7 +61,7 @@ const MUSIC = [
  * does not resolve in lockstep, which is the one thing that would make the
  * placeholder read as fake at a glance.
  */
-const LATENCY_MS: Record<Modality, number> = {
+const LATENCY_MS: Record<AssetKind, number> = {
   image: 1400,
   voice: 1900,
   music: 2200,
@@ -110,28 +111,6 @@ function sampleMediaUrl(request: GenerationRequest): string {
     case "music":
       return pick(MUSIC, seed);
   }
-}
-
-function wait(ms: number, signal?: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason);
-
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-
-    function onAbort() {
-      clearTimeout(timer);
-      reject(signal?.reason);
-    }
-
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 export const sampleProvider: GenerationProvider = {

@@ -1,5 +1,6 @@
 import type { CanvasPeer } from "#/components/block/studio/use-canvas-collab";
 import type { PresenceUser } from "#/lib/canvas/presence";
+import { initial } from "#/lib/initials";
 
 /**
  * How many circles the strip will show. Past this, the last slot stops being a
@@ -86,11 +87,4 @@ function Avatar({ user }: { user: PresenceUser }) {
       )}
     </span>
   );
-}
-
-/** The first grapheme rather than the first byte, so 王雅萱 gets 王 and not a broken glyph. */
-function initial(name: string) {
-  const first = [...name.trim()][0];
-
-  return first?.toUpperCase() ?? "?";
 }

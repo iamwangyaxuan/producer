@@ -109,6 +109,14 @@ function Studio() {
   const { screenToFlowPosition, deleteElements: deleteNodes } = useReactFlow<GenerationNode>();
 
   /**
+   * Whatever the camera is pointed at right now — where a new result is born,
+   * and where an upload lands when nothing else said. Read at the moment of
+   * the gesture rather than tracked, so it follows a pan without a subscription.
+   */
+  const viewportCentre = () =>
+    screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+
+  /**
    * Whether the space bar is being held, which is what puts the canvas into
    * its move-things-around mode: panning and node dragging both wait for it,
    * so a stray drag cannot shove the work about. React Flow's own hook rather
@@ -200,10 +208,7 @@ function Studio() {
   );
 
   function generate(submission: ComposerSubmission) {
-    const centre = screenToFlowPosition({
-      x: window.innerWidth / 2,
-      y: window.innerHeight / 2
-    });
+    const centre = viewportCentre();
 
     const id = collab.addGeneration(
       {
@@ -710,9 +715,7 @@ function Studio() {
 
               event.currentTarget.value = "";
 
-              const origin =
-                uploadOrigin.current ??
-                screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+              const origin = uploadOrigin.current ?? viewportCentre();
 
               uploadOrigin.current = null;
 

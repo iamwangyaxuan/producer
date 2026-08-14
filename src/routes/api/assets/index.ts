@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { getDB, schema } from "#/db";
+import { getDB, newRowId, schema } from "#/db";
 import { ASSET_KINDS } from "#/db/schema";
 import { ALLOWED_MIME, MAX_BYTES, normalizeMime } from "#/lib/asset-constraints";
 import { assetTitle } from "#/lib/asset-links";
@@ -81,12 +81,8 @@ export const Route = createFileRoute("/api/assets/")({
 
         // The object key embeds the asset id and must be written with the
         // insert, so the id is fetched first instead of left to the column
-        // default — one cheap round trip that keeps ids uuidv7 like every
-        // other row.
-        const generated = (await db.execute(sql`select uuidv7() as id`)) as unknown as {
-          rows: Array<{ id: string }>;
-        };
-        const assetId = generated.rows[0].id;
+        // default — see `newRowId`.
+        const assetId = await newRowId(db);
         const objectKey = `${access.organizationId}/${projectId}/${assetId}`;
 
         await db.insert(schema.asset).values({

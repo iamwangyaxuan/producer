@@ -54,7 +54,7 @@ export const DEFAULT_SEATS = {
 } as const satisfies Record<OrganizationType, number>;
 
 function localPart(email: string) {
-  return email.split("@")[0] ?? "";
+  return email.split("@")[0];
 }
 
 function slugify(value: string) {
@@ -203,7 +203,7 @@ export async function countMembers(organizationId: string) {
     .from(schema.member)
     .where(eq(schema.member.organizationId, organizationId));
 
-  return row?.members ?? 0;
+  return row.members;
 }
 
 /**

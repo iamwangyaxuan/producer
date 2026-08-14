@@ -1,16 +1,10 @@
 import { Button as BaseButton } from "@base-ui/react/button";
-import { cn, tv } from "tailwind-variants";
+import { tv } from "tailwind-variants";
 import type { VariantProps } from "tailwind-variants";
 
+import { mergeClassName } from "#/components/ui/class-name";
+import type { ClassName } from "#/components/ui/class-name";
 import Icon from "#/components/ui/icon";
-
-type ClassName<State> = string | ((state: State) => string | undefined) | undefined;
-
-function mergeClassName<State>(preset: string, className: ClassName<State>): ClassName<State> {
-  if (typeof className !== "function") return cn(preset, className);
-
-  return (state) => cn(preset, className(state));
-}
 
 /**
  * Styling hangs off `data-disabled` rather than `:disabled`, because a button
@@ -89,8 +83,6 @@ const buttonClass = tv({
     pending: false
   }
 });
-
-export { buttonClass };
 
 export interface ButtonProps extends BaseButton.Props, VariantProps<typeof buttonClass> {
   /**

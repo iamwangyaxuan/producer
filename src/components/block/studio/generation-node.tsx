@@ -902,66 +902,14 @@ function SoundBody({ data }: { data: GenerationNodeData }) {
 }
 
 /**
- * What a blob says it is, turned into what the file should be called. Every
- * type the upload allowlist accepts is here, plus what the sample library
- * answers with; anything else falls back to the extension the URL carried.
+ * No `download` attribute: the href is always this app's own serving route
+ * carrying `?download=1`, and the `Content-Disposition` it answers with is
+ * what names the file. A second answer here could only disagree with it.
  */
-const EXTENSIONS: Record<string, string> = {
-  "image/jpeg": "jpg",
-  "image/png": "png",
-  "image/webp": "webp",
-  "image/gif": "gif",
-  "image/avif": "avif",
-  "video/mp4": "mp4",
-  "video/webm": "webm",
-  "video/quicktime": "mov",
-  "audio/mpeg": "mp3",
-  "audio/mp4": "m4a",
-  "audio/wav": "wav",
-  "audio/webm": "weba",
-  "audio/ogg": "ogg",
-  "audio/flac": "flac"
-};
-
-/**
- * What the result should be called on disk.
- *
- * An uploaded file already has a name — `prompt` is where it was put — and it
- * arrived with an extension of its own, so it is passed through untouched
- * rather than having a second one appended to it. Only the characters a file
- * system actually refuses are stripped either way, so a prompt written in
- * Chinese or Japanese still names its own file; an ASCII filter would turn
- * every one of them into the same empty string.
- */
-function fileName(data: GenerationNodeData, url: string, type: string) {
-  const stem =
-    data.prompt
-      .replace(/[\\/:*?"<>|]+/g, "")
-      .trim()
-      .replace(/\s+/g, "-")
-      .slice(0, 60) || data.modality;
-
-  if (data.source === "upload") return stem;
-
-  // The serving URL carries no extension, so the blob's own type is what
-  // names these — the pattern only finds one on the third-party URLs older
-  // results still hold.
-  const fromUrl = /\.([a-z0-9]{2,4})(?:$|\?)/i.exec(url)?.[1];
-
-  return `${stem}.${fromUrl ?? EXTENSIONS[type] ?? "bin"}`;
-}
-
-/**
- * `name` is omitted for a cross-origin link, where the attribute would be
- * ignored anyway and the `Content-Disposition` on the response is what names
- * the file. Setting it there is not merely useless — a `download` the browser
- * refuses to honour turns the click into a navigation.
- */
-function saveAs(href: string, name?: string) {
+function saveAs(href: string) {
   const anchor = document.createElement("a");
 
   anchor.href = href;
-  if (name !== undefined) anchor.download = name;
   anchor.rel = "noreferrer";
   anchor.click();
 }
@@ -986,49 +934,19 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
   const src = assetSrc(data);
 
   const [confirming, setConfirming] = useState(false);
-  const [saving, setSaving] = useState(false);
 
-  async function download() {
-    if (!src || saving) return;
+  /**
+   * A node only ever has a `src` once it has an `assetId` — see `assetSrc` —
+   * so there is one route out of here, and it is same-origin. The serving
+   * route's own `?download=1` does all of it: it answers with
+   * `Content-Disposition: attachment` named after the row's filename, and the
+   * browser saves rather than navigates. Nothing has to read the bytes to
+   * rename them, which is why this needs neither a fetch nor a pending state.
+   */
+  function download() {
+    if (!data.assetId) return;
 
-    setSaving(true);
-
-    try {
-      if (data.assetId) {
-        // Same origin, so the serving route's own `?download=1` does all of
-        // it: it answers with `Content-Disposition: attachment` named after
-        // the row's filename, and the browser saves rather than navigates.
-        // Nothing here has to read the bytes to rename them.
-        saveAs(assetContentUrl(data.assetId, { filename: nodeFileName(data), download: true }));
-
-        return;
-      }
-
-      // No asset row: a document from before the asset layer, whose `src` is
-      // some other origin's URL. There the `download` attribute is ignored —
-      // the browser navigates to the media instead of saving it, and what lands
-      // on the disk is named after the URL — so the bytes are pulled through a
-      // blob, which is same-origin by the time the anchor sees it.
-      const response = await fetch(src);
-
-      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
-
-      const blob = await response.blob();
-      const objectUrl = URL.createObjectURL(blob);
-
-      saveAs(objectUrl, fileName(data, src, blob.type));
-
-      // Not revoked on the next line: the click only *queues* the save, and a
-      // URL revoked before the browser reads it downloads nothing at all.
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
-    } catch {
-      // Reading another origin is that origin's to allow, and these samples are
-      // not ours to configure. Opening the file is the most that can be done
-      // from here, and it leaves the browser's own save one step away.
-      window.open(src, "_blank", "noreferrer");
-    } finally {
-      setSaving(false);
-    }
+    saveAs(assetContentUrl(data.assetId, { filename: nodeFileName(data), download: true }));
   }
 
   return (
@@ -1084,8 +1002,7 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
           className="text-black hover:bg-white hover:text-black"
           // Nothing to save until the result has arrived.
           disabled={!src}
-          pending={saving}
-          onClick={() => void download()}
+          onClick={download}
         >
           <Icon name="download" className="text-sm" />
         </Button>
@@ -1354,7 +1271,6 @@ function ResizeHandles({ visual }: { visual: boolean }) {
   );
 }
 
-/** Opaque for the reason the player is: a node you can see the canvas through is not a node. */
 /**
  * What a node says when there is nothing to show, and — when this tab can do
  * something about it — the one action worth offering there.

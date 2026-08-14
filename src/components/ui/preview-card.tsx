@@ -1,13 +1,6 @@
 import { PreviewCard as BasePreviewCard } from "@base-ui/react/preview-card";
-import { cn } from "tailwind-variants";
 
-type ClassName<State> = string | ((state: State) => string | undefined) | undefined;
-
-function mergeClassName<State>(preset: string, className: ClassName<State>): ClassName<State> {
-  if (typeof className !== "function") return cn(preset, className);
-
-  return (state) => cn(preset, className(state));
-}
+import { mergeClassName } from "#/components/ui/class-name";
 
 /**
  * A card that opens on hover, for showing what something *is* without asking

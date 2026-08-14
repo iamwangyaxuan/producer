@@ -1,4 +1,3 @@
-import type { Modality } from "#/components/block/studio/ai-composer";
 import type { AssetKind } from "#/db/schema";
 import { sampleProvider } from "#/server/generation/sample-provider";
 
@@ -30,7 +29,7 @@ export interface GenerationReference {
 }
 
 export interface GenerationRequest {
-  modality: Modality;
+  modality: AssetKind;
   prompt: string;
   /** Catalogue id, e.g. "gpt-image-2" — one flat namespace across vendors. */
   model: string;

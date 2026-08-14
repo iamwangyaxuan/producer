@@ -4,7 +4,7 @@ import { env } from "cloudflare:workers";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 
-import { getDB, schema } from "#/db";
+import { getDB, newRowId, schema } from "#/db";
 import { ASSET_KINDS } from "#/db/schema";
 import type { GenerationParams } from "#/db/schema";
 import { ALLOWED_MIME, normalizeMime } from "#/lib/asset-constraints";
@@ -93,12 +93,8 @@ export const startGeneration = createServerFn({ method: "POST" })
     if (data.duration !== undefined) params.duration = data.duration;
 
     // The object key embeds the asset id and is NOT NULL from the first
-    // insert, so the id is fetched ahead of the row instead of left to the
-    // column default — one cheap round trip that keeps ids uuidv7.
-    const generated = (await db.execute(sql`select uuidv7() as id`)) as unknown as {
-      rows: Array<{ id: string }>;
-    };
-    const assetId = generated.rows[0].id;
+    // insert, so the id is fetched ahead of the row — see `newRowId`.
+    const assetId = await newRowId(db);
     const objectKey = `${access.organizationId}/${data.projectId}/${assetId}`;
 
     // Row and lineage land together: a generation whose reference edges were
@@ -465,10 +461,7 @@ export const retryGeneration = createServerFn({ method: "POST" })
       throw new Error("A referenced asset no longer exists.");
     }
 
-    const generated = (await db.execute(sql`select uuidv7() as id`)) as unknown as {
-      rows: Array<{ id: string }>;
-    };
-    const assetId = generated.rows[0].id;
+    const assetId = await newRowId(db);
     const objectKey = `${asset.organizationId}/${asset.projectId}/${assetId}`;
 
     await db.transaction(async (tx) => {

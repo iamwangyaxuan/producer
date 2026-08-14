@@ -1,5 +1,6 @@
 import { getRequest } from "@tanstack/react-start/server";
 import { env } from "cloudflare:workers";
+import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
@@ -51,4 +52,20 @@ export function getDB() {
   dbCache.set(request, created);
 
   return created;
+}
+
+/**
+ * An id fetched a round trip ahead of the row it belongs to.
+ *
+ * For the writes whose own insert needs the id — an asset's object key embeds
+ * it and is NOT NULL from the first insert — so the column default is too
+ * late. Minted by the same `uuidv7()` that default calls, which is what keeps
+ * these ids sortable like every other row's rather than a v4 from the isolate.
+ */
+export async function newRowId(db: ReturnType<typeof getDB>): Promise<string> {
+  const generated = (await db.execute(sql`select uuidv7() as id`)) as unknown as {
+    rows: Array<{ id: string }>;
+  };
+
+  return generated.rows[0].id;
 }

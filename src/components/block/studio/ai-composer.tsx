@@ -3,6 +3,7 @@ import { useImperativeHandle, useState } from "react";
 import type { Ref } from "react";
 import { cn } from "tailwind-variants";
 
+import { KIND_ICONS } from "#/components/block/studio/asset-mention";
 import { mentionLabel, useAssetMentions } from "#/components/block/studio/use-asset-mentions";
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
@@ -10,7 +11,12 @@ import Menu from "#/components/ui/menu";
 import type { AssetKind } from "#/db/schema";
 import type { AssetSummary } from "#/lib/assets";
 
-export type Modality = "image" | "voice" | "music" | "video";
+/**
+ * What the canvas calls an asset kind. The same four the `asset` table stores,
+ * by definition rather than by a second list that has to be kept in step —
+ * a modality the composer offers and the column refuses is not a thing.
+ */
+export type Modality = AssetKind;
 
 const MODALITIES = [
   { id: "image", label: "Image", icon: "image" },
@@ -408,14 +414,6 @@ export interface AIComposerProps {
 const MENTION_LIST_ID = "composer-mentions";
 
 const optionId = (assetId: string) => `composer-mention-${assetId}`;
-
-/** The glyph that says what a candidate is, borrowed from the modality strip. */
-const KIND_ICONS: Record<AssetSummary["kind"], string> = {
-  image: "image",
-  voice: "graphic_eq",
-  music: "music_note",
-  video: "movie"
-};
 
 export default function AIComposer({
   onSubmit,

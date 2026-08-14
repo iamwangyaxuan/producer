@@ -5,6 +5,7 @@ import { ConfirmDialog, RenameDialog } from "#/components/block/project-dialogs"
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
 import Menu from "#/components/ui/menu";
+import { initial } from "#/lib/initials";
 import { useArchiveProject, useDeleteProject, useRenameProject } from "#/lib/projects";
 
 export interface ProjectCardProps {
@@ -40,11 +41,6 @@ function coverHue(id: string) {
  */
 function coverTint(id: string) {
   return `hsla(${coverHue(id)}, 70%, 55%, 0.22)`;
-}
-
-/** Spread instead of `charAt` so an emoji or a CJK name keeps its first whole glyph. */
-function coverInitial(name: string) {
-  return [...name][0]?.toUpperCase() ?? "?";
 }
 
 /**
@@ -125,7 +121,7 @@ export default function ProjectCard({ id, name, description, image }: ProjectCar
           aria-hidden={true}
           className="relative text-3xl font-semibold tracking-tight text-neutral-400 select-none"
         >
-          {coverInitial(title)}
+          {initial(title)}
         </span>
         {/* Keyed by url so a project that swaps its image gets a fresh attempt
             rather than inheriting the previous one's failure. */}

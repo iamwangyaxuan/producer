@@ -3,6 +3,7 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
 import Menu from "#/components/ui/menu";
+import { initial } from "#/lib/initials";
 import { myOrganizationsQueryOptions, useSwitchOrganization } from "#/lib/organizations";
 import type { OrganizationMembership } from "#/lib/organizations";
 
@@ -104,13 +105,9 @@ export default function OrganizationSwitcher() {
   );
 }
 
-/**
- * Organizations have no image column yet, so every one gets a monogram — the
- * first grapheme rather than the first byte, so 王雅萱 gets 王 and not a broken
- * glyph.
- */
+/** Organizations have no image column yet, so every one gets a monogram. */
 function Monogram({ name }: { name: string }) {
-  const first = [...name.trim()][0]?.toUpperCase() ?? "?";
+  const first = initial(name);
 
   return (
     <span

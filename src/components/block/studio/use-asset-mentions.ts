@@ -186,52 +186,54 @@ export function useAssetMentions(options: UseAssetMentionsOptions) {
               .filter((asset) => mentionLabel(asset).toLowerCase().includes(term))
               .slice(0, MENTION_LIMIT);
           },
-          render: () => ({
-            onStart: (props: SuggestionProps<AssetSummary>) => {
+          render: () => {
+            // Opening the list and revising it are the same job here: take the
+            // insert function this batch came with, then show what it offers.
+            const show = (props: SuggestionProps<AssetSummary>) => {
               commandRef.current = (asset) =>
                 props.command({ id: asset.id, label: mentionLabel(asset), kind: asset.kind });
               openList(props.items);
-            },
-            onUpdate: (props: SuggestionProps<AssetSummary>) => {
-              commandRef.current = (asset) =>
-                props.command({ id: asset.id, label: mentionLabel(asset), kind: asset.kind });
-              openList(props.items);
-            },
-            // Returning true is what stops the key reaching the document, so
-            // the arrows move through the list instead of the sentence.
-            onKeyDown: ({ event }) => {
-              const items = candidatesRef.current;
+            };
 
-              if (items.length === 0) return false;
+            return {
+              onStart: show,
+              onUpdate: show,
+              // Returning true is what stops the key reaching the document, so
+              // the arrows move through the list instead of the sentence.
+              onKeyDown: ({ event }) => {
+                const items = candidatesRef.current;
 
-              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                const step = event.key === "ArrowDown" ? 1 : -1;
+                if (items.length === 0) return false;
 
-                setHighlight((highlightRef.current + step + items.length) % items.length);
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  const step = event.key === "ArrowDown" ? 1 : -1;
 
-                return true;
-              }
+                  setHighlight((highlightRef.current + step + items.length) % items.length);
 
-              // Tab as well as Enter: the list is a completion, and completions
-              // are what Tab does everywhere else.
-              if (event.key === "Enter" || event.key === "Tab") {
-                const asset = items[highlightRef.current];
+                  return true;
+                }
 
-                if (asset) commandRef.current?.(asset);
+                // Tab as well as Enter: the list is a completion, and
+                // completions are what Tab does everywhere else.
+                if (event.key === "Enter" || event.key === "Tab") {
+                  const asset = items[highlightRef.current];
 
-                return true;
-              }
+                  if (asset) commandRef.current?.(asset);
 
-              if (event.key === "Escape") {
-                closeList();
+                  return true;
+                }
 
-                return true;
-              }
+                if (event.key === "Escape") {
+                  closeList();
 
-              return false;
-            },
-            onExit: closeList
-          })
+                  return true;
+                }
+
+                return false;
+              },
+              onExit: closeList
+            };
+          }
         }
       })
     ],

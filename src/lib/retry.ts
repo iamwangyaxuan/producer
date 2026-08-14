@@ -17,12 +17,8 @@
 const BACKOFF_MS = [400, 1_200, 3_000];
 
 export interface RetryOptions {
-  /** Total tries, including the first. Capped by the backoff table. */
-  attempts?: number;
   /** Cancels both the waiting and any further attempt. */
   signal?: AbortSignal;
-  /** Called before each wait, for callers that want to say what is happening. */
-  onRetry?: (attempt: number, error: unknown) => void;
 }
 
 /**
@@ -30,7 +26,7 @@ export interface RetryOptions {
  * cancelled upload for the whole backoff before noticing nobody wants it — and
  * on a deleted node that is a patch written after the node is gone.
  */
-function wait(ms: number, signal?: AbortSignal): Promise<void> {
+export function wait(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason);
@@ -62,7 +58,7 @@ export async function withRetry<T>(
   retriable: (error: unknown) => boolean,
   options: RetryOptions = {}
 ): Promise<T> {
-  const attempts = Math.min(options.attempts ?? BACKOFF_MS.length + 1, BACKOFF_MS.length + 1);
+  const attempts = BACKOFF_MS.length + 1;
 
   let last: unknown;
 
@@ -77,8 +73,6 @@ export async function withRetry<T>(
       // anyway, after a pointless verdict from `retriable`.
       if (options.signal?.aborted) throw error;
       if (index === attempts - 1 || !retriable(error)) throw error;
-
-      options.onRetry?.(index + 1, error);
 
       await wait(BACKOFF_MS[index], options.signal);
     }

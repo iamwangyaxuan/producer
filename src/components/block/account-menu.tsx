@@ -1,6 +1,7 @@
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
 import Menu from "#/components/ui/menu";
+import { initial } from "#/lib/initials";
 import { useSignOut } from "#/lib/session";
 
 export interface AccountMenuProps {
@@ -119,9 +120,4 @@ function Avatar({ user }: AccountMenuProps) {
       )}
     </span>
   );
-}
-
-/** The first grapheme rather than the first byte, so 王雅萱 gets 王 and not a broken glyph. */
-function initial(name: string) {
-  return [...name][0]?.toUpperCase() ?? "?";
 }

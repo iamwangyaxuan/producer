@@ -7,7 +7,6 @@ import { z } from "zod";
 
 import { getDB, schema } from "#/db";
 import type { AssetKind, AssetSource } from "#/db/schema";
-import { assetContentUrl, assetFileName } from "#/lib/asset-links";
 import { canonicalId } from "#/lib/ids";
 import { requireAssetAccess } from "#/server/asset-access";
 import { getProjectAccess } from "#/server/canvas-access";
@@ -24,8 +23,6 @@ export interface AssetSummary {
   createdAt: Date;
   /** What this file is called — see `assetTitle` for how it is chosen. */
   title: string | null;
-  /** Same-origin and cookie-authorized — see `assetContentUrl`. */
-  url: string;
 }
 
 const projectAssetsInput = z.object({ projectId: canonicalId });
@@ -66,19 +63,16 @@ export const fetchProjectAssets = createServerFn({ method: "GET" })
       )
       .orderBy(desc(schema.asset.createdAt), desc(schema.asset.id));
 
-    return rows.map((row) => ({
-      ...row,
-      url: assetContentUrl(row.id, { filename: assetFileName(row) })
-    }));
+    return rows;
   });
 
 /**
  * The project's files, for the composer's `@` list.
  *
- * A plain cached read — the URLs in it are stable paths on this app, so
- * nothing here expires and there is no timer keeping it alive. What
- * invalidates it is a new file arriving, which the upload and generation
- * paths do explicitly.
+ * A plain cached read — it carries no links at all, only the rows a consumer
+ * derives one from with `assetContentUrl`, so nothing here expires and there
+ * is no timer keeping it alive. What invalidates it is a new file arriving,
+ * which the upload and generation paths do explicitly.
  */
 export function projectAssetsQueryOptions(projectId: string) {
   return queryOptions({

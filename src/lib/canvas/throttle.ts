@@ -33,7 +33,7 @@ export function throttled<T extends unknown[]>(ms: number, run: (...args: T) => 
     }
 
     pending = args;
-    timer ??= setTimeout(flush, Math.max(0, ms - (now - last)));
+    timer ??= setTimeout(flush, ms - (now - last));
   }
 
   call.cancel = () => {

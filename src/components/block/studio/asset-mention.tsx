@@ -27,8 +27,12 @@ export interface AssetMentionAttrs {
   kind: AssetKind;
 }
 
-/** The glyph for each kind, matching the composer's own modality strip. */
-const KIND_ICONS: Record<AssetKind, string> = {
+/**
+ * The glyph for each kind, matching the composer's own modality strip — and
+ * shared with it, since the candidate list and the mention preview are two
+ * views of the same file.
+ */
+export const KIND_ICONS: Record<AssetKind, string> = {
   image: "image",
   voice: "graphic_eq",
   music: "music_note",

@@ -1,6 +1,7 @@
 import { ContextMenu as BaseContextMenu } from "@base-ui/react/context-menu";
 import { useContext, useMemo, useState } from "react";
 
+import { mergeClassName } from "#/components/ui/class-name";
 import {
   MENU_POPUP_CLASS,
   MENU_POSITIONER_CLASS,
@@ -13,7 +14,6 @@ import {
   MenuSeparator,
   MenuSubmenu,
   MenuSubmenuTrigger,
-  mergeClassName,
   SubmenuContext
 } from "#/components/ui/menu";
 

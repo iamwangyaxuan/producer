@@ -1,4 +1,4 @@
-import { createFileRoute, notFound, Outlet } from "@tanstack/react-router";
+import { createFileRoute, notFound } from "@tanstack/react-router";
 
 import { projectQueryOptions } from "#/lib/projects";
 
@@ -33,11 +33,7 @@ export const Route = createFileRoute("/_auth/studio/$projectId")({
     const name = loaderData?.name.trim();
 
     return name ? { meta: [{ title: name }] } : {};
-  },
-
-  component: RouteComponent
+  }
+  // No `component`: this layer exists for the loader and the title, and a
+  // route without one already renders its children.
 });
-
-function RouteComponent() {
-  return <Outlet />;
-}

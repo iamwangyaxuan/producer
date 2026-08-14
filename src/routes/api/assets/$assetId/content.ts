@@ -113,6 +113,22 @@ function baseHeaders(asset: AssetRow, etag: string) {
 }
 
 /**
+ * Whether the bytes behind the key stopped being the ones this row was
+ * measured with. An upload's presigned URL stays usable after completion, so a
+ * moved ETag means something replaced the object behind a row that had already
+ * been checked — served, it would hand teammates content nothing ever
+ * validated. Both exits refuse it, and both say so in the log, because a `ready`
+ * row whose object moved is a broken invariant rather than a user mistake.
+ */
+function objectMoved(asset: AssetRow, object: R2Object) {
+  if (!asset.etag || object.etag === asset.etag) return false;
+
+  console.error(`asset ${asset.id} object ${asset.objectKey} changed under a ready row`);
+
+  return true;
+}
+
+/**
  * `?download=1` turns the inline default into an attachment named after the
  * uploaded filename — which lives in a DB column, never in the object key, so
  * it is encoded here rather than trusted anywhere else.
@@ -189,22 +205,13 @@ export async function serveAssetContent(request: Request, assetId: string) {
     return new Response("Not found", { status: 404 });
   }
 
-  // The bytes are only this asset's if they are the ones it was
-  // measured with. An upload's presigned URL stays usable after
-  // completion, so a moved ETag means something replaced the object
-  // behind a row that had already been checked — served, it would hand
-  // teammates content nothing ever validated.
-  if (asset.etag && object.etag !== asset.etag) {
-    console.error(`asset ${asset.id} object ${asset.objectKey} changed under a ready row`);
-
-    return new Response("Not found", { status: 404 });
-  }
+  if (objectMoved(asset, object)) return new Response("Not found", { status: 404 });
 
   const headers = withDisposition(baseHeaders(asset, object.httpEtag), request, asset);
 
-  const precondition = failedPrecondition(request.headers, object);
-
-  if (precondition) return new Response(null, { status: 412, headers });
+  if (failedPrecondition(request.headers, object)) {
+    return new Response(null, { status: 412, headers });
+  }
 
   // A delegated condition matched: R2 answers with metadata but no
   // body, which is exactly a 304.
@@ -251,13 +258,7 @@ export async function headAssetContent(request: Request, assetId: string) {
 
   // The same refusal the GET gives a replaced object, or a player's
   // probe would succeed against bytes the stream request then 404s.
-  if (access.asset.etag && object.etag !== access.asset.etag) {
-    console.error(
-      `asset ${access.asset.id} object ${access.asset.objectKey} changed under a ready row`
-    );
-
-    return new Response(null, { status: 404 });
-  }
+  if (objectMoved(access.asset, object)) return new Response(null, { status: 404 });
 
   const headers = baseHeaders(access.asset, object.httpEtag);
   headers.set("Content-Length", String(object.size));

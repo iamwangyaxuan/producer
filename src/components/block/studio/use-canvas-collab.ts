@@ -23,8 +23,6 @@ import { createCanvasSession } from "#/lib/canvas/session";
 import type { CanvasSession } from "#/lib/canvas/session";
 import { throttled } from "#/lib/canvas/throttle";
 
-export type ConnectionStatus = "connecting" | "connected" | "disconnected";
-
 /** One connected client as the rest of the canvas sees it. */
 export interface CanvasPeer extends PresenceState {
   clientId: number;
@@ -124,7 +122,6 @@ export function useCanvasCollab({
   const [nodes, setNodes] = useState<GenerationNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [peers, setPeers] = useState<CanvasPeer[]>([]);
-  const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [clientId, setClientId] = useState<number | null>(null);
 
   const session = useRef<CanvasSession | null>(null);
@@ -204,7 +201,6 @@ export function useCanvasCollab({
 
     session.current = created;
     setClientId(created.clientId);
-    setStatus("connecting");
 
     /**
      * The whole list is rebuilt from the document rather than patched from the
@@ -281,17 +277,12 @@ export function useCanvasCollab({
       setPeers(states);
     }
 
-    function onStatus(event: { status: ConnectionStatus }) {
-      setStatus(event.status);
-    }
-
     created.nodes.observe(onNodesEvent);
     created.nodeData.observe(onNodeDataEvent);
     created.edges.observe(onEdgesEvent);
     // "change" is the content event; "update" also fires for protocol-level
     // renewals that alter nothing worth re-rendering for.
     created.awareness.on("change", onAwarenessChange);
-    created.provider.on("status", onStatus);
 
     /**
      * A heartbeat through awareness, because this stack sends nothing on its
@@ -315,7 +306,6 @@ export function useCanvasCollab({
 
     return () => {
       clearInterval(heartbeat);
-      created.provider.off("status", onStatus);
       created.awareness.off("change", onAwarenessChange);
       session.current = null;
       created.destroy();
@@ -692,7 +682,6 @@ export function useCanvasCollab({
     nodes,
     edges,
     peers,
-    status,
     clientId,
     applyNodesChange,
     applyEdgesChange,

@@ -22,6 +22,26 @@ const UPLOAD_URL_TTL_SECONDS = 300;
  */
 const DOWNLOAD_URL_TTL_SECONDS = 600;
 
+function r2Client() {
+  return new AwsClient({
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+    service: "s3",
+    region: "auto"
+  });
+}
+
+/**
+ * The account-level S3 endpoint, spelled once. Both signatures cover exactly
+ * this URL, so the two ways out of the bucket cannot drift into addressing the
+ * same object differently.
+ */
+function r2ObjectUrl(objectKey: string) {
+  return new URL(
+    `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${env.R2_BUCKET}/${objectKey}`
+  );
+}
+
 /**
  * A presigned PUT for one object key, addressed to R2's S3 endpoint. The
  * browser uploads straight to the bucket with this URL — the bytes never pass
@@ -41,16 +61,9 @@ export async function presignUploadUrl(
   contentType: string,
   sizeBytes: number
 ): Promise<string> {
-  const client = new AwsClient({
-    accessKeyId: env.R2_ACCESS_KEY_ID,
-    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-    service: "s3",
-    region: "auto"
-  });
+  const client = r2Client();
+  const url = r2ObjectUrl(objectKey);
 
-  const url = new URL(
-    `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${env.R2_BUCKET}/${objectKey}`
-  );
   url.searchParams.set("X-Amz-Expires", String(UPLOAD_URL_TTL_SECONDS));
 
   // `allHeaders` is what actually pins these: with `signQuery` alone,
@@ -100,16 +113,9 @@ export interface DownloadUrlOptions {
  * already covers.
  */
 export async function presignDownloadUrl(options: DownloadUrlOptions): Promise<string> {
-  const client = new AwsClient({
-    accessKeyId: env.R2_ACCESS_KEY_ID,
-    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-    service: "s3",
-    region: "auto"
-  });
+  const client = r2Client();
+  const url = r2ObjectUrl(options.objectKey);
 
-  const url = new URL(
-    `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${env.R2_BUCKET}/${options.objectKey}`
-  );
   url.searchParams.set("X-Amz-Expires", String(DOWNLOAD_URL_TTL_SECONDS));
   url.searchParams.set("response-content-type", options.contentType);
   url.searchParams.set("response-content-disposition", options.contentDisposition);

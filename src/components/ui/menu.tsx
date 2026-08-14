@@ -1,19 +1,9 @@
 import { Menu as BaseMenu } from "@base-ui/react/menu";
 import { createContext, useContext } from "react";
-import { cn, tv } from "tailwind-variants";
+import { tv } from "tailwind-variants";
 
+import { mergeClassName } from "#/components/ui/class-name";
 import Icon from "#/components/ui/icon";
-
-type ClassName<State> = string | ((state: State) => string | undefined) | undefined;
-
-export function mergeClassName<State>(
-  preset: string,
-  className: ClassName<State>
-): ClassName<State> {
-  if (typeof className !== "function") return cn(preset, className);
-
-  return (state) => cn(preset, className(state));
-}
 
 /**
  * Whether this popup is a submenu rather than the menu a trigger opened.

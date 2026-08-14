@@ -1,4 +1,4 @@
-import { createFileRoute, Outlet, redirect } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
 import { sessionQueryOptions } from "#/lib/session";
 
@@ -12,10 +12,7 @@ export const Route = createFileRoute("/_auth")({
 
     // Exposed to every nested route through `Route.useRouteContext()`.
     return { session };
-  },
-  component: RouteComponent
+  }
+  // No `component`: this route is a guard, not a layout, and a route without
+  // one renders its children — which is all a pass-through could have done.
 });
-
-function RouteComponent() {
-  return <Outlet />;
-}
