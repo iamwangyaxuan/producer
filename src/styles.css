@@ -139,3 +139,30 @@
 .canvas-video .vjs-tech {
   object-fit: cover;
 }
+
+/**
+ * The composer's placeholder.
+ *
+ * ProseMirror has no notion of a placeholder attribute — an empty document is
+ * still a paragraph — so the extension marks that paragraph and the text is
+ * drawn here, as generated content. `float` with zero height is what keeps it
+ * out of the layout: the caret has to sit where the first character will go,
+ * not after the hint.
+ */
+.tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--color-neutral-500);
+  float: left;
+  height: 0;
+  pointer-events: none;
+}
+
+/**
+ * A file mention is one object, and the caret proves it: ProseMirror draws a
+ * selected atom with this class, and without a visible treatment the chip
+ * looks identical whether it is about to be deleted or not.
+ */
+.tiptap .ProseMirror-selectednode {
+  outline: 1px solid rgba(218, 220, 224, 0.35);
+  border-radius: 6px;
+}

@@ -1,10 +1,14 @@
-import { useState } from "react";
-import type { KeyboardEvent } from "react";
+import { EditorContent } from "@tiptap/react";
+import { useImperativeHandle, useState } from "react";
+import type { Ref } from "react";
 import { cn } from "tailwind-variants";
 
+import { mentionLabel, useAssetMentions } from "#/components/block/studio/use-asset-mentions";
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
 import Menu from "#/components/ui/menu";
+import type { AssetKind } from "#/db/schema";
+import type { AssetSummary } from "#/lib/assets";
 
 export type Modality = "image" | "voice" | "music" | "video";
 
@@ -70,6 +74,37 @@ export interface ModelOption {
   aspectRatios?: readonly string[];
   /** Seconds, video only. */
   durations?: readonly number[];
+  /**
+   * File kinds this model takes *as input*, when that differs from what its
+   * output modality implies — see {@link DEFAULT_ACCEPTS} for the rule this
+   * overrides.
+   */
+  accepts?: readonly AssetKind[];
+}
+
+/**
+ * What a model will take as an attachment, inferred from what it produces.
+ *
+ * Coarser than the resolution and duration lists above, and deliberately so:
+ * those are enumerated from each provider's documentation because sending a
+ * value outside them fails the request, while this only decides whether the
+ * composer *offers* a file. Image and video models are image-conditioned
+ * across the board — editing a picture, or animating one — and the two sound
+ * families are text-to-audio, which is why their default is nothing at all.
+ *
+ * A model that departs from its family says so with `accepts`, and anything
+ * finer than this belongs in that field rather than here.
+ */
+const DEFAULT_ACCEPTS: Record<Modality, readonly AssetKind[]> = {
+  image: ["image"],
+  video: ["image"],
+  voice: [],
+  music: []
+};
+
+/** The file kinds this model can be handed, however that was decided. */
+export function modelAccepts(model: ModelOption): readonly AssetKind[] {
+  return model.accepts ?? DEFAULT_ACCEPTS[model.modality];
 }
 
 /**
@@ -157,7 +192,15 @@ export const MODELS: readonly ModelOption[] = [
   // Voice — speech and TTS only, now that the two music generators have a
   // heading of their own. Neither resolution nor duration applies, so a picked
   // voice model leaves the composer with just the model menu.
-  { id: "gpt-realtime-2.1", name: "GPT Realtime 2.1", provider: "OpenAI", modality: "voice" },
+  // The one voice model here that is not text-to-speech: it is a speech-to-
+  // speech conversation model, so it takes audio in as well as out.
+  {
+    id: "gpt-realtime-2.1",
+    name: "GPT Realtime 2.1",
+    provider: "OpenAI",
+    modality: "voice",
+    accepts: ["voice"]
+  },
   { id: "gpt-4o-mini-tts", name: "GPT-4o mini TTS", provider: "OpenAI", modality: "voice" },
   {
     id: "gemini-3.1-flash-tts-preview",
@@ -320,12 +363,22 @@ export interface ComposerSubmission {
   aspectRatio?: string;
   /** Seconds; video models only. */
   duration?: number;
-  /**
-   * Assets fed in as inputs. The composer has no file picker yet, so nothing
-   * sets this today — the field exists so the whole path down to the
-   * reference table is already plumbed when one arrives.
-   */
+  /** Files named with `@`, in the order they were attached. */
   referenceAssetIds?: string[];
+}
+
+/**
+ * What the canvas can ask of the composer.
+ *
+ * Imperative because the two questions come from a right-click on a node, which
+ * is nowhere near this component and wants an answer once, at the moment the
+ * menu opens — not a subscription to the model selection.
+ */
+export interface ComposerHandle {
+  /** Whether the chosen model would take this kind of file as an input. */
+  accepts: (kind: AssetKind) => boolean;
+  /** Puts a file into the draft, as if it had been typed with `@`. */
+  attach: (asset: AssetSummary) => void;
 }
 
 export interface AIComposerProps {
@@ -338,11 +391,39 @@ export interface AIComposerProps {
   onSubmit?: (submission: ComposerSubmission) => void;
   /** Disables the composer and puts a spinner in the send button. */
   pending?: boolean;
+  /**
+   * What `@` can reach — the project's own files. Passed in rather than fetched
+   * here because the canvas already holds this list for its own reasons, and
+   * two copies of it would disagree the moment one of them refetched.
+   */
+  assets?: readonly AssetSummary[];
+  ref?: Ref<ComposerHandle>;
   className?: string;
 }
 
-export default function AIComposer({ onSubmit, pending = false, className }: AIComposerProps) {
-  const [text, setText] = useState("");
+/**
+ * Fixed ids rather than generated ones: there is only ever one composer on the
+ * canvas, and `aria-activedescendant` needs to name an element by id.
+ */
+const MENTION_LIST_ID = "composer-mentions";
+
+const optionId = (assetId: string) => `composer-mention-${assetId}`;
+
+/** The glyph that says what a candidate is, borrowed from the modality strip. */
+const KIND_ICONS: Record<AssetSummary["kind"], string> = {
+  image: "image",
+  voice: "graphic_eq",
+  music: "music_note",
+  video: "movie"
+};
+
+export default function AIComposer({
+  onSubmit,
+  pending = false,
+  assets,
+  ref,
+  className
+}: AIComposerProps) {
   const [modality, setModality] = useState<Modality>("image");
 
   /**
@@ -368,36 +449,44 @@ export default function AIComposer({ onSubmit, pending = false, className }: AIC
     : undefined;
   const duration = model.durations ? (durationByModel[model.id] ?? model.durations[0]) : undefined;
 
-  const empty = text.trim() === "";
+  const mentions = useAssetMentions({
+    assets,
+    accepts: modelAccepts(model),
+    disabled: pending,
+    onSubmit: () => submit()
+  });
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      accepts: (kind) => modelAccepts(model).includes(kind),
+      attach: mentions.attach
+    }),
+    [model, mentions.attach]
+  );
 
   function submit() {
-    if (empty || pending) return;
+    if (mentions.empty || pending) return;
+
+    const draft = mentions.read();
+
+    if (draft.text === "") return;
 
     onSubmit?.({
-      text: text.trim(),
+      text: draft.text,
       modality,
       model: model.id,
       resolution,
       aspectRatio,
-      duration
+      duration,
+      referenceAssetIds: draft.assetIds
     });
-    setText("");
-  }
 
-  function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key !== "Enter" || event.shiftKey) return;
-
-    // An IME is mid-composition: this Enter is choosing a candidate, not sending
-    // a message. Without the guard, picking the characters for a Chinese or
-    // Japanese word submits the half-written line instead of completing it.
-    if (event.nativeEvent.isComposing) return;
-
-    event.preventDefault();
-    submit();
+    mentions.clear();
   }
 
   return (
-    <div className={cn("flex flex-col items-start gap-2", className)}>
+    <div className={cn("relative flex flex-col items-start gap-2", className)}>
       {/* Toggle buttons rather than a radiogroup: a radiogroup owes the reader
           arrow-key navigation and a roving tabindex, and for three always-visible
           options `aria-pressed` says the same thing while leaving each segment
@@ -434,6 +523,59 @@ export default function AIComposer({ onSubmit, pending = false, className }: AIC
         })}
       </div>
 
+      {/* Positioned against the whole composer rather than laid out inside it.
+          As a sibling in the column the list took real height, shoving the
+          modality strip and everything above it upward on every `@`; anchored
+          to the input box alone it covered that strip instead. Hung off the
+          outer container it clears both — the composer does not move, and none
+          of it is hidden.
+
+          Above rather than at the caret: the composer is pinned to the bottom
+          of the viewport, so there is only one direction a list can open in,
+          and a full-width list is easier to hit than one floating
+          mid-sentence. */}
+      {mentions.open ? (
+        <div
+          id={MENTION_LIST_ID}
+          role="listbox"
+          aria-label="Files"
+          className={cn(
+            "absolute bottom-full left-0 z-10 mb-2 flex w-full flex-col gap-0.5 rounded-2xl border p-1",
+            "border-[rgba(218,220,224,0.1)] bg-background/95 backdrop-blur-xl",
+            "shadow-[0_16px_40px_rgba(0,0,0,0.45)]"
+          )}
+        >
+          {mentions.candidates.map((asset, index) => {
+            const selected = index === mentions.highlight;
+
+            return (
+              // Not a button, and not focusable: the editor keeps focus the
+              // whole time so typing never stops. `mousedown` rather than
+              // `click`, because losing focus would otherwise close the list
+              // and take the row out from under the press.
+              <div
+                key={asset.id}
+                id={optionId(asset.id)}
+                role="option"
+                aria-selected={selected}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  mentions.choose(asset);
+                }}
+                onMouseEnter={() => mentions.setHighlight(index)}
+                className={cn(
+                  "flex cursor-pointer items-center gap-2 rounded-xl px-2 py-1.5 text-[13px]",
+                  selected ? "bg-[rgba(218,220,224,0.12)] text-foreground" : "text-neutral-400"
+                )}
+              >
+                <Icon name={KIND_ICONS[asset.kind]} className="shrink-0 text-sm" />
+                <span className="min-w-0 flex-1 truncate">{mentionLabel(asset)}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
       <div
         className={cn(
           "flex w-full flex-col gap-1 rounded-2xl border p-2",
@@ -443,38 +585,21 @@ export default function AIComposer({ onSubmit, pending = false, className }: AIC
           "border-[rgba(218,220,224,0.1)] bg-background/80 backdrop-blur-xl"
         )}
       >
-        {/* `nowheel` keeps a scroll inside a long draft from reaching the canvas —
-            without it, scrolling the text zooms the whole graph instead.
-
-            The grid is what makes the textarea grow with its content: the mirror
-            below is the same text with the same metrics, so it sets the row
-            height the textarea then stretches to. `field-sizing: content` would
-            do this in one line, but it is still missing from enough browsers to
-            be a regression for the people who have those. */}
-        <div className="nowheel grid max-h-40 overflow-y-auto">
-          <textarea
-            rows={1}
-            value={text}
-            disabled={pending}
-            aria-label="Message"
-            placeholder="Ask anything"
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={onKeyDown}
-            className={cn(
-              "col-start-1 row-start-1 resize-none overflow-hidden bg-transparent",
-              "px-2 py-1.5 text-[13px] leading-5 outline-none",
-              "placeholder:text-neutral-500 disabled:text-neutral-400"
-            )}
+        {/* `nowheel` keeps a scroll inside a long draft from reaching the canvas
+            — without it, scrolling the text zooms the whole graph instead. The
+            editor grows with its content on its own, so the mirror element a
+            textarea needed for that is gone with it. */}
+        <div className="nowheel max-h-40 overflow-y-auto">
+          <EditorContent
+            editor={mentions.editor}
+            role="combobox"
+            aria-expanded={mentions.open}
+            aria-controls={MENTION_LIST_ID}
+            aria-activedescendant={
+              mentions.open && mentions.active ? optionId(mentions.active.id) : undefined
+            }
+            aria-autocomplete="list"
           />
-          <div
-            aria-hidden
-            className="invisible col-start-1 row-start-1 px-2 py-1.5 text-[13px] leading-5 whitespace-pre-wrap"
-          >
-            {/* The trailing newline is load-bearing: a draft ending in Enter
-                would otherwise measure as the line before it and the box would
-                not grow. */}
-            {text + "\n"}
-          </div>
         </div>
 
         <div className="flex items-end gap-2">
@@ -546,7 +671,7 @@ export default function AIComposer({ onSubmit, pending = false, className }: AIC
             shape="circle"
             className="shrink-0"
             aria-label="Send"
-            disabled={empty}
+            disabled={mentions.empty}
             pending={pending}
             onClick={submit}
           >
