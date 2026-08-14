@@ -1,11 +1,14 @@
+import { Toast } from "@base-ui/react/toast";
 import { useQueryErrorResetBoundary, useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, useRouter } from "@tanstack/react-router";
 import type { ErrorComponentProps } from "@tanstack/react-router";
 import { useEffect } from "react";
+import type { ReactNode } from "react";
 
 import ProjectCard, { ProjectCardSkeleton } from "#/components/block/project-card";
+import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
-import { organizationProjectsQueryOptions } from "#/lib/projects";
+import { organizationProjectsQueryOptions, useCreateProject } from "#/lib/projects";
 import type { OrganizationProjects } from "#/lib/projects";
 
 export const Route = createFileRoute("/_auth/_dashboard/projects/")({
@@ -83,6 +86,52 @@ function RouteComponent() {
     organizationProjectsQueryOptions(session.session.activeOrganizationId)
   );
 
+  const navigate = useNavigate();
+  const toast = Toast.useToastManager();
+  const create = useCreateProject();
+
+  /**
+   * One press, no dialog: a new project is an empty canvas, and the point of
+   * making one is to be on it. Naming waits until the studio, where the toolbar
+   * already renames — which is also where the name is easiest to choose, once
+   * there is something on the board to name.
+   *
+   * The failure has to be reported from here rather than from a form that is no
+   * longer in the way, so it goes to the toast the canvas already uses for the
+   * things it has to refuse.
+   */
+  function createAndOpen() {
+    create.mutate(undefined, {
+      onSuccess: (project) =>
+        void navigate({ to: "/studio/$projectId", params: { projectId: project.id } }),
+      onError: (error) =>
+        toast.add({
+          type: "error",
+          title: "Could not create the project",
+          // A failed server function can carry driver-level detail — a
+          // connection string, a fragment of SQL — so only the development
+          // build shows the original message, the same trade the dialogs make.
+          description: import.meta.env.DEV ? error.message : "Please try again."
+        })
+    });
+  }
+
+  /**
+   * Withheld when the session is not scoped to an organization, because that is
+   * exactly the state the create would throw in. Nothing else on this page can
+   * put it right — the switcher in the sidebar can — so an inert button here
+   * would only be a dead end with a spinner.
+   *
+   * `pending` rather than `disabled` while the insert is in flight: the button
+   * keeps focus, and Base UI swallows the click anyway, so a second press cannot
+   * make a second project.
+   */
+  const newProjectButton = data.organization ? (
+    <Button onClick={createAndOpen} pending={create.isPending}>
+      New project
+    </Button>
+  ) : null;
+
   return (
     <div className={PAGE_CLASS}>
       <div className={CONTENT_CLASS}>
@@ -93,13 +142,14 @@ function RouteComponent() {
               {countLabel(data.projects.length, data.organization?.name ?? null)}
             </p>
           </div>
-          {/* The "New project" button belongs here, right-aligned on the title's
-              baseline. Nothing is rendered yet because there is no create flow
-              for it to open. */}
+          {newProjectButton}
         </header>
 
         <div className="mt-8">
-          <ProjectGrid data={data} />
+          {/* The same button again on an empty page, not a second way of doing
+              it: with no cards to look at, the one in the corner is the only
+              thing on screen and nothing points at it. */}
+          <ProjectGrid data={data} action={newProjectButton} />
         </div>
       </div>
     </div>
@@ -107,7 +157,7 @@ function RouteComponent() {
 }
 
 /** Split out so the three outcomes read as three cases rather than nested ternaries. */
-function ProjectGrid({ data }: { data: OrganizationProjects }) {
+function ProjectGrid({ data, action }: { data: OrganizationProjects; action: ReactNode }) {
   if (!data.organization) {
     return (
       <Panel
@@ -124,6 +174,7 @@ function ProjectGrid({ data }: { data: OrganizationProjects }) {
         icon="folder_open"
         title="No projects yet"
         description={`Projects created in ${data.organization.name} will show up here.`}
+        action={action}
       />
     );
   }
@@ -149,7 +200,18 @@ function ProjectGrid({ data }: { data: OrganizationProjects }) {
   );
 }
 
-function Panel({ icon, title, description }: { icon: string; title: string; description: string }) {
+function Panel({
+  icon,
+  title,
+  description,
+  action
+}: {
+  icon: string;
+  title: string;
+  description: string;
+  /** The way out of this state, for the panels that have one. */
+  action?: ReactNode;
+}) {
   return (
     <div className={PANEL_CLASS}>
       <span className={PANEL_ICON_CLASS}>
@@ -157,6 +219,7 @@ function Panel({ icon, title, description }: { icon: string; title: string; desc
       </span>
       <h2 className="text-foreground text-base font-medium">{title}</h2>
       <p className="max-w-sm text-sm text-neutral-400">{description}</p>
+      {action ? <div className="mt-2">{action}</div> : null}
     </div>
   );
 }

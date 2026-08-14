@@ -261,20 +261,51 @@ async function requireActiveOrganization() {
 
   if (memberships.length === 0) throw new Error("No active organization.");
 
-  return { db, organizationId: activeOrganizationId };
+  // The user id comes back with the scope because the create path stamps
+  // `createdBy` with it, and it has already been resolved from the cookie here —
+  // taking it from the caller would be the one input this file refuses on
+  // principle.
+  return { db, organizationId: activeOrganizationId, userId: session.user.id };
 }
 
 /**
- * Every write takes the project id from the client and the organization from
- * the cookie, then asks for both in the same `where`. A project id belonging to
- * another tenant matches nothing, so a forged id is indistinguishable from one
- * that no longer exists — which is exactly what it should look like from
+ * The one write with nothing to point at, so the organization from the cookie is
+ * the whole of its scope — and, like the list read, it takes no input at all.
+ *
+ * Naming happens afterwards, in the studio the new project opens into: the point
+ * of the button is to be on a canvas, and a dialog in front of it would ask for
+ * the one thing that is easiest to decide once there is something on the board.
+ * So `name` is left off the insert entirely and the column's default answers it,
+ * which keeps "Untitled project" written down once — in the schema — rather than
+ * here as well and in every placeholder that would then have to agree with it.
+ */
+export const createProject = createServerFn({ method: "POST" }).handler(
+  async (): Promise<ProjectDetail> => {
+    const { db, organizationId, userId } = await requireActiveOrganization();
+
+    // No `length === 0` check to match the writes below: those return nothing
+    // when the id matched no row of this organization's, while a plain insert
+    // either hands back its row or raises.
+    const [created] = await db
+      .insert(schema.project)
+      .values({ organizationId, createdBy: userId })
+      .returning({ id: schema.project.id, name: schema.project.name });
+
+    return created;
+  }
+);
+
+/**
+ * The writes below all take the project id from the client and the organization
+ * from the cookie, then ask for both in the same `where`. A project id belonging
+ * to another tenant matches nothing, so a forged id is indistinguishable from
+ * one that no longer exists — which is exactly what it should look like from
  * outside.
  */
-const projectInput = z.object({ id: z.uuid() });
+const projectInput = z.object({ id: canonicalId });
 
 const renameInput = z.object({
-  id: z.uuid(),
+  id: canonicalId,
   // Trimmed before the length check, so a name of nothing but spaces is
   // rejected rather than stored — `name` is NOT NULL but has no such opinion.
   name: z.string().trim().min(1).max(PROJECT_NAME_MAX_LENGTH)
@@ -370,6 +401,26 @@ function useProjectMutation<TVariables>(mutationFn: (variables: TVariables) => P
   return useMutation({
     mutationFn,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: PROJECT_LIST_SCOPE })
+  });
+}
+
+/**
+ * The one mutation that does not use the helper above, because it is the one
+ * whose caller leaves the list behind: the invalidation is fired rather than
+ * returned, so the navigation into the new project's studio does not wait on a
+ * refetch of the grid it is walking away from. The refetch still happens and
+ * still lands in the cache — it just races the route change instead of blocking
+ * it, which is what keeps the grid correct for coming back to inside the 30
+ * seconds its `staleTime` would otherwise sit on.
+ */
+export function useCreateProject() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => createProject(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: PROJECT_LIST_SCOPE });
+    }
   });
 }
 
