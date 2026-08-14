@@ -108,7 +108,5 @@ export async function tombstoneOrganizationAssets(organizationId: string) {
   await getDB()
     .update(schema.asset)
     .set({ deletedAt: sql`now()` })
-    .where(
-      and(eq(schema.asset.organizationId, organizationId), isNull(schema.asset.deletedAt))
-    );
+    .where(and(eq(schema.asset.organizationId, organizationId), isNull(schema.asset.deletedAt)));
 }
