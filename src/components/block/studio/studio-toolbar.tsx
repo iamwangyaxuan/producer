@@ -134,12 +134,16 @@ export function ZoomLevel() {
          * Escape and a press on the canvas still dismiss it, and the reading in
          * the trigger stays live above the popup while all this happens.
          */}
+        {/* Magnifiers rather than a bare plus and minus. In a column of icons
+            that all name what their row does, `add` and `remove` name something
+            else entirely — every other menu in this app uses them for adding
+            and removing things, not for moving a camera. */}
         <Menu.Item
           closeOnClick={false}
           disabled={zoom <= minZoom + ZOOM_EPSILON}
           onClick={() => step(-1)}
         >
-          <Icon name="remove" className="text-sm" />
+          <Icon name="zoom_out" className="text-sm" />
           Zoom out
         </Menu.Item>
         <Menu.Item
@@ -147,7 +151,7 @@ export function ZoomLevel() {
           disabled={zoom >= maxZoom - ZOOM_EPSILON}
           onClick={() => step(1)}
         >
-          <Icon name="add" className="text-sm" />
+          <Icon name="zoom_in" className="text-sm" />
           Zoom in
         </Menu.Item>
 
