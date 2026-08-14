@@ -371,6 +371,18 @@ export const asset = pgTable(
     sizeBytes: bigint("size_bytes", { mode: "number" }),
     /** Original filename as uploaded, display-only; null for AI assets. */
     filename: text("filename"),
+    /**
+     * What to call this file — the name a person reads, and the one its URL
+     * and download carry. An upload keeps the name it arrived with (minus the
+     * extension, which is re-derived from the stored type); a generation gets
+     * a short phrase summarizing its prompt, written by a model because
+     * nothing mechanical turns "a photo of a dog running on grass" into
+     * "running dog".
+     *
+     * Nullable, and every reader falls back — see `assetTitle` — because a
+     * generation whose naming call failed is still a perfectly good asset.
+     */
+    title: text("title"),
     // Measured output facts, queryable across providers — unlike the request
     // parameters in `params`, whose vocabulary each provider owns.
     width: integer("width"),

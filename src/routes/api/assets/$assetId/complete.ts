@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { env } from "cloudflare:workers";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 import { getDB, schema } from "#/db";
 import { MAX_BYTES } from "#/lib/asset-constraints";
@@ -30,11 +30,17 @@ export const Route = createFileRoute("/api/assets/$assetId/complete")({
         // asset is immutable — its key is cached against — so completing
         // twice is refused rather than repeated.
         if (asset.source !== "upload" || asset.status !== "pending") {
-          return Response.json({ error: "Nothing here is waiting for an upload." }, { status: 409 });
+          return Response.json(
+            { error: "Nothing here is waiting for an upload." },
+            { status: 409 }
+          );
         }
 
         if (asset.createdBy !== userId) {
-          return Response.json({ error: "Only the uploader can finish an upload." }, { status: 403 });
+          return Response.json(
+            { error: "Only the uploader can finish an upload." },
+            { status: 403 }
+          );
         }
 
         const head = await env.MEDIA.head(asset.objectKey);
@@ -42,6 +48,18 @@ export const Route = createFileRoute("/api/assets/$assetId/complete")({
         if (!head) {
           return Response.json({ error: "The upload has not arrived." }, { status: 400 });
         }
+
+        // Both writes below re-assert what the read at the top saw — still
+        // pending, still undeleted — the same guard `runGeneration`'s bind
+        // carries. The read is not a lock: a concurrent `deleteAsset` can
+        // tombstone the row between it and here, and an unguarded update
+        // would flip a tombstoned row to `ready`, leaving a deleted asset
+        // whose row claims to be a live one.
+        const stillPending = and(
+          eq(schema.asset.id, asset.id),
+          eq(schema.asset.status, "pending"),
+          isNull(schema.asset.deletedAt)
+        );
 
         // Belt to the signature's braces: the signed Content-Length already
         // stops a longer body reaching the bucket, and this catches anything
@@ -51,7 +69,7 @@ export const Route = createFileRoute("/api/assets/$assetId/complete")({
           await getDB()
             .update(schema.asset)
             .set({ status: "failed", error: "File is too large." })
-            .where(eq(schema.asset.id, asset.id));
+            .where(stillPending);
           await env.MEDIA.delete(asset.objectKey).catch(() => {});
 
           return Response.json({ error: "File is too large." }, { status: 413 });
@@ -62,15 +80,23 @@ export const Route = createFileRoute("/api/assets/$assetId/complete")({
         // serving route compares what it finds against this and refuses a
         // stranger, which is what makes "a ready asset is immutable" true
         // rather than merely intended.
-        await getDB()
+        const completed = await getDB()
           .update(schema.asset)
           .set({ status: "ready", sizeBytes: head.size, etag: head.etag })
-          .where(eq(schema.asset.id, asset.id));
+          .where(stillPending)
+          .returning({ id: schema.asset.id });
 
-        return Response.json({
-          assetId: asset.id,
-          url: `/api/assets/${asset.id}/content`
-        });
+        // Zero rows back: the row moved on mid-call — deleted, most likely.
+        // The bytes stay for the tombstone sweep, and the caller hears what
+        // any later reader will find.
+        if (completed.length === 0) {
+          return Response.json({ error: "That asset does not exist." }, { status: 404 });
+        }
+
+        // The id and nothing else. A link to the bytes is presigned and short
+        // lived, so it is fetched by id when it is needed rather than handed
+        // out here, where the caller would be tempted to keep it.
+        return Response.json({ assetId: asset.id });
       }
     }
   }

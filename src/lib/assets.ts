@@ -1,3 +1,4 @@
+import { queryOptions } from "@tanstack/react-query";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { env } from "cloudflare:workers";
@@ -5,10 +6,11 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { getDB, schema } from "#/db";
+import type { AssetKind, AssetSource } from "#/db/schema";
+import { assetContentUrl, assetFileName } from "#/lib/asset-links";
+import { canonicalId } from "#/lib/ids";
 import { requireAssetAccess } from "#/server/asset-access";
 import { getProjectAccess } from "#/server/canvas-access";
-
-import type { AssetKind, AssetSource } from "#/db/schema";
 
 export interface AssetSummary {
   id: string;
@@ -20,11 +22,13 @@ export interface AssetSummary {
   mimeType: string | null;
   sizeBytes: number | null;
   createdAt: Date;
-  /** Where the bytes are served from, same-origin and cookie-authorized. */
+  /** What this file is called — see `assetTitle` for how it is chosen. */
+  title: string | null;
+  /** Same-origin and cookie-authorized — see `assetContentUrl`. */
   url: string;
 }
 
-const projectAssetsInput = z.object({ projectId: z.uuid() });
+const projectAssetsInput = z.object({ projectId: canonicalId });
 
 /**
  * A project's stored files, newest first. Only `ready` rows: pending ones are
@@ -48,7 +52,8 @@ export const fetchProjectAssets = createServerFn({ method: "GET" })
         model: schema.asset.model,
         mimeType: schema.asset.mimeType,
         sizeBytes: schema.asset.sizeBytes,
-        createdAt: schema.asset.createdAt
+        createdAt: schema.asset.createdAt,
+        title: schema.asset.title
       })
       .from(schema.asset)
       .where(
@@ -61,10 +66,34 @@ export const fetchProjectAssets = createServerFn({ method: "GET" })
       )
       .orderBy(desc(schema.asset.createdAt), desc(schema.asset.id));
 
-    return rows.map((row) => ({ ...row, url: `/api/assets/${row.id}/content` }));
+    return rows.map((row) => ({
+      ...row,
+      url: assetContentUrl(row.id, { filename: assetFileName(row) })
+    }));
   });
 
-const assetInput = z.object({ id: z.uuid() });
+/**
+ * The project's files, for the composer's `@` list.
+ *
+ * A plain cached read — the URLs in it are stable paths on this app, so
+ * nothing here expires and there is no timer keeping it alive. What
+ * invalidates it is a new file arriving, which the upload and generation
+ * paths do explicitly.
+ */
+export function projectAssetsQueryOptions(projectId: string) {
+  return queryOptions({
+    queryKey: projectAssetsScope(projectId),
+    queryFn: ({ signal }) => fetchProjectAssets({ data: { projectId }, signal }),
+    staleTime: 30_000
+  });
+}
+
+/** The key a finished upload or generation invalidates to pick up its new file. */
+export function projectAssetsScope(projectId: string) {
+  return ["projects", projectId, "assets"] as const;
+}
+
+const assetInput = z.object({ id: canonicalId });
 
 /**
  * Deletes the asset and its bytes, in the order that can never lie: the

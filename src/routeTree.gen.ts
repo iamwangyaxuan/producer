@@ -21,6 +21,7 @@ import { Route as AuthDashboardProjectsIndexRouteImport } from './routes/_auth/_
 import { Route as AuthStudioProjectIdIndexRouteImport } from './routes/_auth/studio/$projectId/index'
 import { Route as ApiAssetsAssetIdCompleteRouteImport } from './routes/api/assets/$assetId/complete'
 import { Route as ApiAssetsAssetIdContentRouteImport } from './routes/api/assets/$assetId/content'
+import { Route as ApiAssetsAssetIdContentFilenameRouteImport } from './routes/api/assets/$assetId/content.$filename'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -84,6 +85,12 @@ const ApiAssetsAssetIdContentRoute = ApiAssetsAssetIdContentRouteImport.update({
   path: '/api/assets/$assetId/content',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAssetsAssetIdContentFilenameRoute =
+  ApiAssetsAssetIdContentFilenameRouteImport.update({
+    id: '/$filename',
+    path: '/$filename',
+    getParentRoute: () => ApiAssetsAssetIdContentRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -93,9 +100,10 @@ export interface FileRoutesByFullPath {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
-  '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRoute
+  '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
   '/projects/': typeof AuthDashboardProjectsIndexRoute
   '/studio/$projectId/': typeof AuthStudioProjectIdIndexRoute
+  '/api/assets/$assetId/content/$filename': typeof ApiAssetsAssetIdContentFilenameRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -104,9 +112,10 @@ export interface FileRoutesByTo {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets': typeof ApiAssetsIndexRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
-  '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRoute
+  '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
   '/projects': typeof AuthDashboardProjectsIndexRoute
   '/studio/$projectId': typeof AuthStudioProjectIdIndexRoute
+  '/api/assets/$assetId/content/$filename': typeof ApiAssetsAssetIdContentFilenameRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -119,9 +128,10 @@ export interface FileRoutesById {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
-  '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRoute
+  '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
   '/_auth/_dashboard/projects/': typeof AuthDashboardProjectsIndexRoute
   '/_auth/studio/$projectId/': typeof AuthStudioProjectIdIndexRoute
+  '/api/assets/$assetId/content/$filename': typeof ApiAssetsAssetIdContentFilenameRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -136,6 +146,7 @@ export interface FileRouteTypes {
     | '/api/assets/$assetId/content'
     | '/projects/'
     | '/studio/$projectId/'
+    | '/api/assets/$assetId/content/$filename'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -147,6 +158,7 @@ export interface FileRouteTypes {
     | '/api/assets/$assetId/content'
     | '/projects'
     | '/studio/$projectId'
+    | '/api/assets/$assetId/content/$filename'
   id:
     | '__root__'
     | '/'
@@ -161,6 +173,7 @@ export interface FileRouteTypes {
     | '/api/assets/$assetId/content'
     | '/_auth/_dashboard/projects/'
     | '/_auth/studio/$projectId/'
+    | '/api/assets/$assetId/content/$filename'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -171,7 +184,7 @@ export interface RootRouteChildren {
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAssetsIndexRoute: typeof ApiAssetsIndexRoute
   ApiAssetsAssetIdCompleteRoute: typeof ApiAssetsAssetIdCompleteRoute
-  ApiAssetsAssetIdContentRoute: typeof ApiAssetsAssetIdContentRoute
+  ApiAssetsAssetIdContentRoute: typeof ApiAssetsAssetIdContentRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -260,6 +273,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAssetsAssetIdContentRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/assets/$assetId/content/$filename': {
+      id: '/api/assets/$assetId/content/$filename'
+      path: '/$filename'
+      fullPath: '/api/assets/$assetId/content/$filename'
+      preLoaderRoute: typeof ApiAssetsAssetIdContentFilenameRouteImport
+      parentRoute: typeof ApiAssetsAssetIdContentRoute
+    }
   }
 }
 
@@ -302,6 +322,20 @@ const AuthRouteRouteWithChildren = AuthRouteRoute._addFileChildren(
   AuthRouteRouteChildren,
 )
 
+interface ApiAssetsAssetIdContentRouteChildren {
+  ApiAssetsAssetIdContentFilenameRoute: typeof ApiAssetsAssetIdContentFilenameRoute
+}
+
+const ApiAssetsAssetIdContentRouteChildren: ApiAssetsAssetIdContentRouteChildren =
+  {
+    ApiAssetsAssetIdContentFilenameRoute: ApiAssetsAssetIdContentFilenameRoute,
+  }
+
+const ApiAssetsAssetIdContentRouteWithChildren =
+  ApiAssetsAssetIdContentRoute._addFileChildren(
+    ApiAssetsAssetIdContentRouteChildren,
+  )
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRouteRoute: AuthRouteRouteWithChildren,
@@ -310,7 +344,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAssetsIndexRoute: ApiAssetsIndexRoute,
   ApiAssetsAssetIdCompleteRoute: ApiAssetsAssetIdCompleteRoute,
-  ApiAssetsAssetIdContentRoute: ApiAssetsAssetIdContentRoute,
+  ApiAssetsAssetIdContentRoute: ApiAssetsAssetIdContentRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

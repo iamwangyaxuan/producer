@@ -1,7 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { env } from "cloudflare:workers";
 
-import { ALLOWED_MIME } from "#/lib/asset-constraints";
+import { servableMime } from "#/lib/asset-constraints";
+import { assetFileName } from "#/lib/asset-links";
 import { requireAssetAccess } from "#/server/asset-access";
 import type { AssetRow } from "#/server/asset-access";
 
@@ -93,24 +94,11 @@ function resolveRange(range: R2Range, size: number): { offset: number; length: n
   return { offset: from, length: length ?? size - from };
 }
 
-/**
- * A type is only served as itself if it is one this app accepts for that
- * kind. Rows predate their allowlist in two ways — a generation records
- * whatever the provider's `Content-Type` said, and the lists may tighten —
- * so the check is made here at the sink rather than trusted from the row. A
- * stranger is served as an opaque download instead of being rendered inline,
- * which is the difference between a file and a script on this origin.
- */
-function servableType(asset: AssetRow) {
-  const declared = asset.mimeType?.split(";")[0].trim().toLowerCase();
-
-  if (declared && ALLOWED_MIME[asset.kind].includes(declared)) return declared;
-
-  return null;
-}
-
 function baseHeaders(asset: AssetRow, etag: string) {
-  const type = servableType(asset);
+  // The same verdict the presigned path pins as `response-content-type`, from
+  // the same function, so the two ways out of the asset layer cannot come to
+  // different conclusions about what a file may be served as.
+  const type = servableMime(asset.kind, asset.mimeType);
 
   return new Headers({
     // The DB row is canonical — never R2 metadata, never sniffing, and
@@ -136,7 +124,9 @@ function withDisposition(headers: Headers, request: Request, asset: AssetRow) {
   // the file is still worth doing.
   if (!wantsDownload && headers.get("Content-Disposition") === "inline") return headers;
 
-  const name = asset.filename ?? `${asset.kind}-${asset.id}`;
+  // The row's own name, built the same way every other surface builds it —
+  // so what the URL says the file is called and what lands on disk agree.
+  const name = assetFileName(asset);
   const ascii = name.replace(/[^\x20-\x7e]/gu, "_").replaceAll('"', "'");
 
   headers.set(
@@ -147,11 +137,20 @@ function withDisposition(headers: Headers, request: Request, asset: AssetRow) {
   return headers;
 }
 
-export const Route = createFileRoute("/api/assets/$assetId/content")({
-  server: {
-    handlers: {
-      GET: async ({ request, params }) => {
-        const access = await requireAssetAccess(request.headers, params.assetId);
+/**
+ * Both routes run this: `/content` and `/content/<name>.<ext>`.
+ *
+ * The name segment is decoration — it makes a link read as the file it points
+ * at, and gives a browser something to save it as. It is deliberately not
+ * consulted here: the asset id is the identifier, and the served filename is
+ * built from the row (see `withDisposition`), so a hand-edited name in the URL
+ * changes what the link looks like and nothing else.
+ */
+export async function serveAssetContent(request: Request, assetId: string) {
+  {
+    {
+      {
+        const access = await requireAssetAccess(request.headers, assetId);
 
         // Only ready rows serve: a pending object may be half-written, and a
         // failed one has nothing worth showing. Both answer like they do not
@@ -238,12 +237,20 @@ export const Route = createFileRoute("/api/assets/$assetId/content")({
         headers.set("Content-Length", String(object.size));
 
         return new Response(object.body, { status: 200, headers });
-      },
+      }
+    }
+  }
+}
 
-      // Some players probe with HEAD before committing to a stream; answering
-      // it honestly costs one metadata read.
-      HEAD: async ({ request, params }) => {
-        const access = await requireAssetAccess(request.headers, params.assetId);
+/**
+ * Some players probe with HEAD before committing to a stream; answering it
+ * honestly costs one metadata read.
+ */
+export async function headAssetContent(request: Request, assetId: string) {
+  {
+    {
+      {
+        const access = await requireAssetAccess(request.headers, assetId);
 
         if (!access || access.asset.status !== "ready") {
           return new Response(null, { status: 404 });
@@ -253,11 +260,30 @@ export const Route = createFileRoute("/api/assets/$assetId/content")({
 
         if (!object) return new Response(null, { status: 404 });
 
+        // The same refusal the GET gives a replaced object, or a player's
+        // probe would succeed against bytes the stream request then 404s.
+        if (access.asset.etag && object.etag !== access.asset.etag) {
+          console.error(
+            `asset ${access.asset.id} object ${access.asset.objectKey} changed under a ready row`
+          );
+
+          return new Response(null, { status: 404 });
+        }
+
         const headers = baseHeaders(access.asset, object.httpEtag);
         headers.set("Content-Length", String(object.size));
 
         return new Response(null, { status: 200, headers });
       }
+    }
+  }
+}
+
+export const Route = createFileRoute("/api/assets/$assetId/content")({
+  server: {
+    handlers: {
+      GET: ({ request, params }) => serveAssetContent(request, params.assetId),
+      HEAD: ({ request, params }) => headAssetContent(request, params.assetId)
     }
   }
 });

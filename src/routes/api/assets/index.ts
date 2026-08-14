@@ -1,13 +1,13 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { getDB, schema } from "#/db";
-import { ALLOWED_MIME, MAX_BYTES } from "#/lib/asset-constraints";
+import { ASSET_KINDS } from "#/db/schema";
+import { ALLOWED_MIME, MAX_BYTES, normalizeMime } from "#/lib/asset-constraints";
+import { assetTitle } from "#/lib/asset-links";
 import { getProjectAccess } from "#/server/canvas-access";
 import { presignUploadUrl } from "#/server/r2-presign";
-
-import { ASSET_KINDS } from "#/db/schema";
 
 const createInput = z.object({
   projectId: z.uuid(),
@@ -43,7 +43,21 @@ export const Route = createFileRoute("/api/assets/")({
           return Response.json({ error: "Invalid upload description." }, { status: 400 });
         }
 
-        const { projectId, kind, mimeType, sizeBytes, filename } = parsed.data;
+        const { projectId, kind, sizeBytes, filename } = parsed.data;
+
+        // Judged, signed and stored in one canonical spelling. Keeping the
+        // client's own spelling for the signature — as this once did, so the
+        // browser could PUT `file.type` verbatim — let anything the allowlist
+        // ignores ride along into the bucket: `normalizeMime` compares only the
+        // part before the first `;`, so `image/png;x=1,text/html` passes the
+        // check as `image/png` and then lands as the object's stored
+        // `Content-Type`. Nothing serves that value today, but an object whose
+        // metadata contradicts its row is a trap for whatever reads it next.
+        //
+        // Signing the normalized form instead means R2 will only accept a PUT
+        // that declares exactly that, which is why the client is told below
+        // what to send rather than left to repeat its own guess.
+        const mimeType = normalizeMime(parsed.data.mimeType);
 
         if (!ALLOWED_MIME[kind].includes(mimeType)) {
           return Response.json({ error: `Unsupported ${kind} type: ${mimeType}` }, { status: 400 });
@@ -86,12 +100,35 @@ export const Route = createFileRoute("/api/assets/")({
           mimeType,
           sizeBytes,
           filename,
+          // An upload arrives already named — the person called it something,
+          // and that is the title. The extension comes off because it is
+          // re-derived from the stored type wherever a filename is needed,
+          // and keeping it here would produce `photo.png.png`.
+          title: assetTitle({ kind, title: null, filename, prompt: null, mimeType }),
           createdBy: access.userId
         });
 
-        const uploadUrl = await presignUploadUrl(objectKey, mimeType, sizeBytes);
+        let uploadUrl: string;
+        try {
+          uploadUrl = await presignUploadUrl(objectKey, mimeType, sizeBytes);
+        } catch (error) {
+          // The row was inserted for a URL that now cannot exist, so no byte
+          // will ever arrive for it — deleting it outright beats leaving a
+          // pending row for the sweep's 24-hour grace to collect. If even the
+          // delete is lost, that sweep is still the backstop.
+          console.error(`failed to presign upload for asset ${assetId}`, error);
+          await db
+            .delete(schema.asset)
+            .where(eq(schema.asset.id, assetId))
+            .catch(() => {});
 
-        return Response.json({ assetId, uploadUrl }, { status: 201 });
+          return Response.json({ error: "Upload could not be prepared." }, { status: 500 });
+        }
+
+        // `contentType` is not advice: it is the exact string the signature
+        // covers, so a PUT sending anything else — including the browser's own
+        // spelling of the same type — is refused by R2.
+        return Response.json({ assetId, uploadUrl, contentType: mimeType }, { status: 201 });
       }
     }
   }
