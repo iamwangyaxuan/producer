@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  customType,
   doublePrecision,
   index,
   integer,
@@ -18,6 +19,24 @@ import {
 const generate_id_fun = "uuidv7()";
 
 const tstz = (name: string) => timestamp(name, { withTimezone: true });
+
+/**
+ * Raw bytes. `pg-core` has no `bytea` of its own, and the driver speaks
+ * `Buffer` on both sides — the copy on the way out is deliberate: node-postgres
+ * hands back slices of a pooled buffer, and a `Uint8Array` that merely borrowed
+ * one would decode a document the pool had meanwhile reused underneath it.
+ */
+const bytea = customType<{ data: Uint8Array; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+  fromDriver(value) {
+    return new Uint8Array(value);
+  },
+  toDriver(value) {
+    return Buffer.from(value);
+  }
+});
 
 export const user = pgTable("user", {
   id: uuid("id").primaryKey().default(sql.raw(generate_id_fun)),
@@ -243,6 +262,37 @@ export const project = pgTable(
 );
 
 /**
+ * The project's canvas, as one Yjs update.
+ *
+ * The document is a CRDT, so what is stored is the encoded state rather than
+ * rows per node: re-encoding on every save also garbage-collects everything
+ * deleted, which is why a canvas edited for months stays the size of what is
+ * currently on it. Keeping it whole is what preserves the delete tombstones —
+ * projecting the nodes into relational rows and rebuilding the document from
+ * them would lose the record that a node was ever deleted, and a client still
+ * holding the old node would push it straight back.
+ *
+ * It lives here rather than in the Durable Object's own SQLite so that one
+ * database holds everything the app owns: `pg_dump` takes the canvases with
+ * it, a restore lands them at the same point in time as the projects they
+ * belong to, and the row goes when the project does — DO storage is reachable
+ * only through the object itself, cannot be enumerated, and would have to be
+ * backed up and collected by hand.
+ *
+ * One row, not chunks: the 1 MB splitting the DO version needed was working
+ * around SQLite's 2 MB ceiling per value, and `bytea` (TOASTed past ~2 KB, up
+ * to 1 GB) has no such cliff. Which also makes the save a single upsert —
+ * atomic replacement without a transaction around a delete and re-insert.
+ */
+export const canvasSnapshot = pgTable("canvas_snapshot", {
+  projectId: uuid("project_id")
+    .primaryKey()
+    .references(() => project.id, { onDelete: "cascade" }),
+  content: bytea("content").notNull(),
+  savedAt: tstz("saved_at").defaultNow().notNull()
+});
+
+/**
  * Provider-shaped request parameters, stored verbatim. Vocabularies differ per
  * model ("1K" vs "1080p", ratio lists, duration sets), so these are display /
  * re-run data, not relational data. Measured output facts (width, height,
@@ -462,7 +512,15 @@ export const projectRelations = relations(project, ({ one, many }) => ({
     fields: [project.createdBy],
     references: [user.id]
   }),
-  assets: many(asset)
+  assets: many(asset),
+  canvas: one(canvasSnapshot)
+}));
+
+export const canvasSnapshotRelations = relations(canvasSnapshot, ({ one }) => ({
+  project: one(project, {
+    fields: [canvasSnapshot.projectId],
+    references: [project.id]
+  })
 }));
 
 export const assetRelations = relations(asset, ({ one, many }) => ({

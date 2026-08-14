@@ -1,6 +1,7 @@
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
 import { createServerFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
+import { env } from "cloudflare:workers";
 import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 
@@ -331,6 +332,20 @@ export const deleteProject = createServerFn({ method: "POST" })
       .returning({ id: schema.project.id });
 
     if (deleted.length === 0) throw new Error(NOT_FOUND);
+
+    // The snapshot row left with the project through its foreign key, but the
+    // room is not only a row: live sockets, its alarm, and any write still
+    // buffered against an unreachable database all outlive the delete — and
+    // that last one now points at a project that is gone. Best-effort: the
+    // delete has already committed, and a purge lost here leaves storage
+    // rather than correctness behind. A save that races past it fails the
+    // same foreign key and gives up on its own, and the access gate answers
+    // 404 for a project that no longer exists.
+    try {
+      await env.CanvasRoom.get(env.CanvasRoom.idFromName(data.id)).purge();
+    } catch (error) {
+      console.error(`failed to purge canvas room for project ${data.id}`, error);
+    }
 
     return { id: data.id };
   });
