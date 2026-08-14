@@ -127,21 +127,50 @@ function Studio() {
 
   /**
    * The one thing the hook deliberately does not do: on a focused button it
-   * leaves the browser's default alone, so the space bar would *both* enter
-   * drag mode and — on release — press the button. On this canvas that pairing
-   * is never meant: someone who has just clicked "Tidy up" and holds space to
-   * move a node would rearrange everyone's board again on letting go. Space
-   * activates buttons on keyup, so dropping focus on keydown is enough.
+   * leaves the browser's default alone — `useKeyPress` skips `preventDefault`
+   * when the event target is a BUTTON or an A, on purpose, so that a canvas
+   * cannot quietly break the keyboard on its own toolbar. There is no option to
+   * turn that off, so a canvas that means something else by the space bar has to
+   * say so itself.
+   *
+   * Here it has to. The focus is usually still sitting on a toolbar button
+   * without anyone realising: closing a menu hands focus back to the trigger it
+   * was opened from, and a pointer never lights the focus ring, so the button
+   * looks idle while the browser still treats it as the one being typed at. The
+   * space bar then does both jobs — enter drag mode, and press that button on
+   * release.
+   *
+   * It has to be `preventDefault` rather than dropping the focus, which is what
+   * this did before. Both stop the press on keyup, but the browser marks the
+   * button `:active` *after* the keydown is dispatched — later than any handler
+   * or effect that could blur it. Blurring therefore left `:active` set on an
+   * element that no longer had focus, and keyup went to the body instead, so
+   * nothing ever cleared it: `active:blur-[1.5px]` stayed on and the button was
+   * left permanently smudged until someone pressed a mouse button on it again.
+   * Preventing the default kills the `:active` and the click at the one moment
+   * that governs both, and leaves the focus where the keyboard user put it.
+   *
+   * Capture, because a trigger may stop the keydown from reaching the document.
+   * Enter still activates buttons and still opens menus, which is what keeps
+   * this from being a keyboard dead end.
    */
   useEffect(() => {
-    if (!dragMode) return;
+    const swallowSpace = (event: KeyboardEvent) => {
+      const target = event.target;
 
-    const active = document.activeElement;
+      if (
+        event.code === "Space" &&
+        target instanceof HTMLElement &&
+        (target.tagName === "BUTTON" || target.tagName === "A")
+      ) {
+        event.preventDefault();
+      }
+    };
 
-    if (active instanceof HTMLElement && (active.tagName === "BUTTON" || active.tagName === "A")) {
-      active.blur();
-    }
-  }, [dragMode]);
+    document.addEventListener("keydown", swallowSpace, true);
+
+    return () => document.removeEventListener("keydown", swallowSpace, true);
+  }, []);
 
   /** Who this tab is, to everyone else on the canvas. */
   const me = useMemo(
