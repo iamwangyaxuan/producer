@@ -1,5 +1,5 @@
 import { Toast } from "@base-ui/react/toast";
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   Background,
@@ -14,24 +14,35 @@ import type { NodeChange } from "@xyflow/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent } from "react";
 
+import { ConfirmDialog } from "#/components/block/project-dialogs";
 import AIComposer from "#/components/block/studio/ai-composer";
-import type { ComposerSubmission } from "#/components/block/studio/ai-composer";
+import type { ComposerHandle, ComposerSubmission } from "#/components/block/studio/ai-composer";
 import AlignmentGuides from "#/components/block/studio/alignment-guides";
-import { DragModeContext, GENERATION_NODE_TYPES } from "#/components/block/studio/generation-node";
-import type { GenerationNode } from "#/components/block/studio/generation-node";
+import {
+  DragModeContext,
+  GENERATION_NODE_TYPES,
+  NodeActionsContext
+} from "#/components/block/studio/generation-node";
+import type {
+  GenerationNode,
+  GenerationNodeData,
+  NodeActions
+} from "#/components/block/studio/generation-node";
 import PresenceAvatars from "#/components/block/studio/presence-avatars";
 import PresenceCursors from "#/components/block/studio/presence-cursors";
-import StudioToolbar from "#/components/block/studio/studio-toolbar";
+import StudioToolbar, { ZoomLevel } from "#/components/block/studio/studio-toolbar";
 import { useCanvasCollab } from "#/components/block/studio/use-canvas-collab";
 import { useGenerations } from "#/components/block/studio/use-generations";
 import { useSnapGuides } from "#/components/block/studio/use-snap-guides";
 import { useUploads } from "#/components/block/studio/use-uploads";
 import { useViewportMemory } from "#/components/block/studio/use-viewport-memory";
 import Button from "#/components/ui/button";
+import ContextMenu from "#/components/ui/context-menu";
 import Icon from "#/components/ui/icon";
-import Menu from "#/components/ui/menu";
 import { ALLOWED_MIME, kindFromMime, MAX_BYTES } from "#/lib/asset-constraints";
-import { deleteAsset } from "#/lib/assets";
+import { assetContentUrl } from "#/lib/asset-links";
+import { deleteAsset, projectAssetsQueryOptions } from "#/lib/assets";
+import type { AssetSummary } from "#/lib/assets";
 import { presenceColor } from "#/lib/canvas/presence";
 import { projectQueryOptions } from "#/lib/projects";
 
@@ -89,7 +100,13 @@ function Studio() {
   // with nothing in it is a toolbar nobody can find.
   const projectName = project?.name.trim() || "Untitled project";
 
-  const { screenToFlowPosition } = useReactFlow<GenerationNode>();
+  /**
+   * The project's files. Not the canvas's — a node derives its URL from the id
+   * it already holds — so this is an ordinary query and nothing waits on it.
+   */
+  const { data: assets } = useQuery(projectAssetsQueryOptions(projectId));
+
+  const { screenToFlowPosition, deleteElements: deleteNodes } = useReactFlow<GenerationNode>();
 
   /**
    * Whether the space bar is being held, which is what puts the canvas into
@@ -146,6 +163,41 @@ function Studio() {
   const snap = useSnapGuides(collab.nodes, collab.applyNodesChange);
 
   useViewportMemory(projectId);
+
+  /**
+   * What `@` can reach: the files that are actually on the board.
+   *
+   * The project's asset list is the wrong set on both sides. It is too large —
+   * a file whose node was deleted still has a row, as does anything a
+   * teammate's node used before they removed it, so the list fills up with
+   * things nobody can point at. And it is ordered by row, so two nodes showing
+   * the same file offered it twice. Reading the ids off the canvas fixes both:
+   * the set is what is visible, and a set cannot repeat.
+   *
+   * Ordered by the asset list rather than by node, so the menu stays newest
+   * first however the board is arranged.
+   */
+  const canvasAssetIds = useMemo(() => {
+    const ids = new Set<string>();
+
+    for (const node of collab.nodes) {
+      if (node.data.assetId && node.data.status === "ready") ids.add(node.data.assetId);
+    }
+
+    return ids;
+  }, [collab.nodes]);
+
+  /**
+   * Left `undefined` until the query has answered, rather than flattened to an
+   * empty array. The composer prunes mentions of files that are no longer in
+   * this list, so "not loaded yet" and "nothing is attachable" have to be
+   * distinguishable — otherwise the first render of a reloaded page would read
+   * as every file having been deleted.
+   */
+  const attachableAssets = useMemo(
+    () => assets?.filter((asset) => canvasAssetIds.has(asset.id)),
+    [assets, canvasAssetIds]
+  );
 
   function generate(submission: ComposerSubmission) {
     const centre = screenToFlowPosition({
@@ -286,59 +338,99 @@ function Studio() {
   } | null>(null);
 
   /**
+   * The node menu, and everything it needs decided at the moment of the
+   * right-click rather than while it is open.
+   *
+   * `asset` and `attachable` in particular: the file behind a node is looked up
+   * once here, and whether the chosen model would take it is asked of the
+   * composer once here. Both are answered against what was true when the menu
+   * opened, which is also the only state a menu should ever act on.
+   */
+  const [nodeMenu, setNodeMenu] = useState<{
+    screen: { x: number; y: number };
+    nodeId: string;
+    data: GenerationNodeData;
+    asset?: AssetSummary;
+    attachable: boolean;
+  } | null>(null);
+
+  /** The node the delete item is asking about, once it has been confirmed. */
+  const [deleting, setDeleting] = useState<{ id: string; hasFile: boolean } | null>(null);
+
+  /**
    * Carried from the menu click to the picker's answer in a ref, because the
    * menu state is long closed — and cleared — by the time a file dialog
    * resolves.
    */
   const uploadOrigin = useRef<{ x: number; y: number } | null>(null);
 
+  /** How the node menu reaches the composer — see `ComposerHandle`. */
+  const composer = useRef<ComposerHandle>(null);
+
   const filePicker = useRef<HTMLInputElement>(null);
-
-  const menuPopup = useRef<HTMLDivElement>(null);
-
-  /**
-   * Dismissal, owned here rather than left to Base UI: a menu opened by a
-   * trigger gets outside-press and Escape handling from the interactions the
-   * trigger wires up, but this one is opened by decree — `open` flipped on a
-   * pane right-click — and in that detached configuration none of those
-   * listeners exist (verified, not assumed). The capture phase sees a press
-   * before anything can swallow it, and the opening right-click cannot
-   * self-dismiss because these listeners only attach after it has run. A
-   * second right-click on the pane lands here first, closes this menu, and
-   * then reopens it at the new point.
-   */
-  useEffect(() => {
-    if (!canvasMenu) return;
-
-    function onPointerDown(event: globalThis.PointerEvent) {
-      if (!menuPopup.current?.contains(event.target as Node)) setCanvasMenu(null);
-    }
-
-    function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key === "Escape") setCanvasMenu(null);
-    }
-
-    document.addEventListener("pointerdown", onPointerDown, true);
-    document.addEventListener("keydown", onKeyDown, true);
-
-    // Focus after the portal has painted, so the keyboard talks to the menu
-    // rather than to whatever the right-click left focused.
-    const frame = requestAnimationFrame(() => menuPopup.current?.focus());
-
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown, true);
-      document.removeEventListener("keydown", onKeyDown, true);
-      cancelAnimationFrame(frame);
-    };
-  }, [canvasMenu]);
 
   function handlePaneContextMenu(event: ReactMouseEvent | globalThis.MouseEvent) {
     // The browser's own menu has nothing to say about a canvas.
     event.preventDefault();
 
+    // The node menu, if one is up, is about something this press is not.
+    // Said outright rather than left to the outside-press dismissal, which
+    // holds off for a moment after opening so the press that opened a menu
+    // cannot close it again — a right-click landing inside that window would
+    // otherwise leave both menus on screen at once.
+    setNodeMenu(null);
+
     const point = { x: event.clientX, y: event.clientY };
 
     setCanvasMenu({ screen: point, flow: screenToFlowPosition(point) });
+  }
+
+  function handleNodeContextMenu(event: ReactMouseEvent, node: GenerationNode) {
+    event.preventDefault();
+    // A right-click on a node is about that node; the pane's own menu would
+    // otherwise open underneath this one.
+    event.stopPropagation();
+
+    setCanvasMenu(null);
+
+    const asset = node.data.assetId
+      ? assets?.find((entry) => entry.id === node.data.assetId)
+      : undefined;
+
+    setNodeMenu({
+      screen: { x: event.clientX, y: event.clientY },
+      nodeId: node.id,
+      data: node.data,
+      asset,
+      // Two ways this is false, and the menu does not distinguish them: the
+      // file is still arriving, or the chosen model does not take that kind of
+      // input at all. Either way the item is there but inert, which says the
+      // action exists without pretending it would work.
+      attachable: asset !== undefined && (composer.current?.accepts(asset.kind) ?? false)
+    });
+  }
+
+  function attachToPrompt() {
+    const asset = nodeMenu?.asset;
+
+    setNodeMenu(null);
+
+    if (asset) composer.current?.attach(asset);
+  }
+
+  function downloadNode() {
+    const data = nodeMenu?.data;
+
+    setNodeMenu(null);
+
+    if (!data?.assetId) return;
+
+    const anchor = document.createElement("a");
+
+    anchor.href = assetContentUrl(data.assetId, { download: true });
+    anchor.rel = "noreferrer";
+    anchor.download = "";
+    anchor.click();
   }
 
   function pickFilesToUpload() {
@@ -381,142 +473,254 @@ function Studio() {
     collab.setCursor(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
   }
 
+  /**
+   * Everything a retry needs, read through a ref so the context value below can
+   * be built once. It is handed to every node on the canvas, and a fresh object
+   * each render would re-render all of them on every frame of a drag — for a
+   * pair of callbacks nobody is pressing while dragging.
+   */
+  const retryTargets = useRef({ uploads, generations, patch: collab.patchNodeData, projectId });
+
+  useEffect(() => {
+    retryTargets.current = { uploads, generations, patch: collab.patchNodeData, projectId };
+  }, [uploads, generations, collab.patchNodeData, projectId]);
+
+  /**
+   * Whether a failed node can be tried again is a question about this tab, not
+   * about the node: an upload can only be retried where the file still is, and
+   * after a reload that is nowhere. A generation can always be retried, because
+   * the request it was made from is on the server.
+   */
+  const nodeActions = useMemo<NodeActions>(
+    () => ({
+      canRetry: (id, data) => {
+        const { uploads, generations } = retryTargets.current;
+
+        return data.source === "upload" ? uploads.canRetry(id) : generations.canRetry(data, id);
+      },
+      retry: (id, data) => {
+        const { uploads, generations, patch, projectId } = retryTargets.current;
+
+        if (data.source === "upload") void uploads.retry(id, patch);
+        else void generations.retry(id, projectId, data, patch);
+      }
+    }),
+    []
+  );
+
   return (
     // Above `ReactFlow`, so it reaches the nodes it renders: each one uses it to
     // decide whether hovering should offer to move it.
     <DragModeContext value={dragMode}>
-      <main
-        className="h-svh"
-        onPointerMove={shareCursor}
-        onPointerLeave={() => collab.setCursor(null)}
-      >
-        <ReactFlow
-          // Also what React Flow reads to swap in its own grab and grabbing
-          // cursors, so the pointer follows the mode without being told twice.
-          panOnDrag={dragMode}
-          nodesDraggable={dragMode}
-          // The wheel follows the same modifier the drag does. At rest it
-          // moves the camera — panning is the constant gesture on a board,
-          // and a wheel that zooms by default keeps yanking the world out
-          // from under the pointer. With space down the wheel zooms instead:
-          // space already means "move things around", and scale is the one
-          // camera move a plain wheel cannot make.
-          panOnScroll={!dragMode}
-          zoomOnScroll={dragMode}
-          // React Flow's own space-bar shortcut, switched off by name: its
-          // default `panActivationKeyCode` is Space, and while that key is
-          // down it forces `panOnScroll` back on — quietly overriding the
-          // two props above and turning the drag-mode wheel back into a pan.
-          // This canvas already gives the space bar its meaning itself.
-          panActivationKeyCode={null}
-          // A double-click is a gesture nodes get to mean things with (and
-          // misfire on — two fast clicks on a video's transport); the camera
-          // lurching in on every one made it unusable for both.
-          zoomOnDoubleClick={false}
-          nodes={collab.nodes}
-          edges={collab.edges}
-          onNodesChange={handleNodesChange}
-          onEdgesChange={collab.applyEdgesChange}
-          onConnect={collab.connect}
-          onDrop={handleDrop}
-          onDragOver={handleDragOver}
-          onPaneContextMenu={handlePaneContextMenu}
-          nodeTypes={GENERATION_NODE_TYPES}
-          colorMode="dark"
-          aria-label="Canvas"
+      <NodeActionsContext value={nodeActions}>
+        <main
+          className="h-svh"
+          onPointerMove={shareCursor}
+          onPointerLeave={() => collab.setCursor(null)}
         >
-          <Background variant={BackgroundVariant.Dots} gap={DOT_SPACING} size={1} />
+          <ReactFlow
+            // Also what React Flow reads to swap in its own grab and grabbing
+            // cursors, so the pointer follows the mode without being told twice.
+            panOnDrag={dragMode}
+            nodesDraggable={dragMode}
+            // The wheel follows the same modifier the drag does. At rest it
+            // moves the camera — panning is the constant gesture on a board,
+            // and a wheel that zooms by default keeps yanking the world out
+            // from under the pointer. With space down the wheel zooms instead:
+            // space already means "move things around", and scale is the one
+            // camera move a plain wheel cannot make.
+            panOnScroll={!dragMode}
+            zoomOnScroll={dragMode}
+            // React Flow's own space-bar shortcut, switched off by name: its
+            // default `panActivationKeyCode` is Space, and while that key is
+            // down it forces `panOnScroll` back on — quietly overriding the
+            // two props above and turning the drag-mode wheel back into a pan.
+            // This canvas already gives the space bar its meaning itself.
+            panActivationKeyCode={null}
+            // A double-click is a gesture nodes get to mean things with (and
+            // misfire on — two fast clicks on a video's transport); the camera
+            // lurching in on every one made it unusable for both.
+            zoomOnDoubleClick={false}
+            nodes={collab.nodes}
+            edges={collab.edges}
+            onNodesChange={handleNodesChange}
+            onEdgesChange={collab.applyEdgesChange}
+            onConnect={collab.connect}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onPaneContextMenu={handlePaneContextMenu}
+            onNodeContextMenu={handleNodeContextMenu}
+            nodeTypes={GENERATION_NODE_TYPES}
+            colorMode="dark"
+            aria-label="Canvas"
+          >
+            <Background variant={BackgroundVariant.Dots} gap={DOT_SPACING} size={1} />
 
-          <AlignmentGuides {...snap.guides} />
+            <AlignmentGuides {...snap.guides} />
 
-          <PresenceCursors peers={collab.peers} selfClientId={collab.clientId} />
+            <PresenceCursors peers={collab.peers} selfClientId={collab.clientId} />
 
-          <Panel position="top-left" className="m-0 p-6">
-            <StudioToolbar projectId={projectId} name={projectName}>
-              {/* Nothing to tidy until there are two things to put in order, so
+            <Panel position="top-left" className="m-0 p-6">
+              <StudioToolbar projectId={projectId} name={projectName}>
+                {/* First, so the number keeps its place: the button beside it
+                  comes and goes with the node count, and a reading that jumped
+                  sideways whenever a second node landed would be a reading
+                  nobody could glance at. */}
+                <ZoomLevel />
+
+                {/* Nothing to tidy until there are two things to put in order, so
                 the control stays out of the way until it would do something.
                 It sits inside the strip rather than beside it because there is
                 only one top-left corner, and two panels claiming it would land
                 on top of each other. */}
-              {collab.nodes.length > 1 ? (
-                <Button icon variant="ghost" size="md" aria-label="Tidy up" onClick={collab.tidy}>
-                  <Icon name="grid_view" className="text-base" />
-                </Button>
-              ) : null}
-            </StudioToolbar>
-          </Panel>
+                {collab.nodes.length > 1 ? (
+                  <Button icon variant="ghost" size="md" aria-label="Tidy up" onClick={collab.tidy}>
+                    <Icon name="grid_view" className="text-base" />
+                  </Button>
+                ) : null}
+              </StudioToolbar>
+            </Panel>
 
-          {/* Who else is here, in the corner every design tool keeps it in. */}
-          <Panel position="top-right" className="m-0 p-6">
-            <PresenceAvatars peers={collab.peers} />
-          </Panel>
+            {/* Who else is here, in the corner every design tool keeps it in. */}
+            <Panel position="top-right" className="m-0 p-6">
+              <PresenceAvatars peers={collab.peers} />
+            </Panel>
 
-          {/* Full-width but pointer-transparent, so the composer can sit centred
+            {/* Full-width but pointer-transparent, so the composer can sit centred
             without the strip around it taking every drag along the bottom of the
             canvas with it. */}
-          <Panel position="bottom-left" className="pointer-events-none m-0 w-full">
-            <div className="px-6 pb-6">
-              <AIComposer
-                className="pointer-events-auto mx-auto w-full max-w-2xl"
-                onSubmit={(submission) => void generate(submission)}
-              />
-            </div>
-          </Panel>
-        </ReactFlow>
+            <Panel position="bottom-left" className="pointer-events-none m-0 w-full">
+              <div className="px-6 pb-6">
+                <AIComposer
+                  ref={composer}
+                  className="pointer-events-auto mx-auto w-full max-w-2xl"
+                  assets={attachableAssets}
+                  onSubmit={(submission) => void generate(submission)}
+                />
+              </div>
+            </Panel>
+          </ReactFlow>
 
-        {/* Detached from any trigger: the pane's right-click is the trigger,
-          and the popup anchors to the point it happened at. The flow position
-          was captured then too, so the menu can close — and the camera move —
-          without the eventual files losing their place. */}
-        <Menu.Root
-          open={canvasMenu !== null}
-          onOpenChange={(open) => {
-            if (!open) setCanvasMenu(null);
-          }}
-        >
-          <Menu.Content
-            ref={menuPopup}
-            positioner={{
-              sideOffset: 0,
-              anchor: canvasMenu
-                ? {
-                    getBoundingClientRect: () =>
-                      DOMRect.fromRect({ x: canvasMenu.screen.x, y: canvasMenu.screen.y })
-                  }
-                : undefined
+          {/* No `Trigger` wrapping a region, because the region cannot be wrapped:
+          React Flow owns the right-click, and it is what decides whether the
+          press was on the pane or on a node — a question no DOM ancestry can
+          answer, since a node sits inside the pane. So the press is reported
+          here and handed back as a point, which is the one thing Base UI needs
+          to place a context menu exactly as if it had caught the press itself.
+
+          The flow position was captured at the same moment, so the menu can
+          close — and the camera move — without the eventual files losing the
+          place they were asked for. */}
+          <ContextMenu.Root
+            open={canvasMenu !== null}
+            onOpenChange={(open) => {
+              if (!open) setCanvasMenu(null);
             }}
           >
-            <Menu.Item onClick={pickFilesToUpload}>
-              <Icon name="upload_file" className="text-sm text-neutral-400" />
-              Upload files
-            </Menu.Item>
-          </Menu.Content>
-        </Menu.Root>
+            <ContextMenu.Content point={canvasMenu?.screen}>
+              <ContextMenu.Item onClick={pickFilesToUpload}>
+                <Icon name="upload_file" className="text-sm" />
+                Upload files
+              </ContextMenu.Item>
+            </ContextMenu.Content>
+          </ContextMenu.Root>
 
-        {/* The picker the menu item reaches for. `accept` mirrors the server's
+          {/* The node's own menu, opened the same way as the pane's. */}
+          <ContextMenu.Root
+            open={nodeMenu !== null}
+            onOpenChange={(open) => {
+              if (!open) setNodeMenu(null);
+            }}
+          >
+            <ContextMenu.Content point={nodeMenu?.screen}>
+              <ContextMenu.Item disabled={!nodeMenu?.data.assetId} onClick={downloadNode}>
+                <Icon name="download" className="text-sm" />
+                Download
+              </ContextMenu.Item>
+
+              {/* Present but inert when the model cannot take this kind of file:
+                the action is real and belongs to this node, and hiding it would
+                make the menu's contents change shape with the model chosen two
+                panels away. */}
+              <ContextMenu.Item disabled={!nodeMenu?.attachable} onClick={attachToPrompt}>
+                <Icon name="alternate_email" className="text-sm" />
+                Add to prompt
+              </ContextMenu.Item>
+
+              <ContextMenu.Separator />
+
+              {/* Only the label is red. The row's highlight stays neutral because
+                overriding the menu's preset would be a specificity tie broken by
+                whichever rule Tailwind happens to emit last. */}
+              <ContextMenu.Item
+                className="text-red-400"
+                onClick={() => {
+                  const target = nodeMenu;
+
+                  setNodeMenu(null);
+
+                  if (target) setDeleting({ id: target.nodeId, hasFile: !!target.data.assetId });
+                }}
+              >
+                <Icon name="delete" className="text-sm" />
+                Delete
+              </ContextMenu.Item>
+            </ContextMenu.Content>
+          </ContextMenu.Root>
+
+          <ConfirmDialog
+            open={deleting !== null}
+            onClose={() => setDeleting(null)}
+            title="Delete this result?"
+            description={
+              deleting?.hasFile
+                ? "The file is removed from this project for everyone."
+                : "The node is removed from the canvas for everyone."
+            }
+            confirmLabel="Delete"
+            destructive
+            // Nothing to report or wait for: removing the node is a local edit
+            // the collaboration layer replicates, and the file it may own is
+            // collected by the change handler above rather than awaited here.
+            error={null}
+            pending={false}
+            onConfirm={() => {
+              if (deleting) void deleteNodes({ nodes: [{ id: deleting.id }] });
+
+              // Dismissed here rather than by the dialog, which leaves confirm
+              // open on purpose so a slow or failed action can report itself.
+              // The node's own copy of this dialog gets away without it only
+              // because deleting the node unmounts the dialog with it; this one
+              // lives on the canvas and would simply stay up.
+              setDeleting(null);
+            }}
+          />
+
+          {/* The picker the menu item reaches for. `accept` mirrors the server's
           allowlist as a courtesy; the change handler still validates. Resetting
           `value` lets the same file be chosen twice in a row. */}
-        <input
-          ref={filePicker}
-          type="file"
-          multiple
-          accept={UPLOAD_ACCEPT}
-          className="hidden"
-          onChange={(event) => {
-            const files = Array.from(event.currentTarget.files ?? []);
+          <input
+            ref={filePicker}
+            type="file"
+            multiple
+            accept={UPLOAD_ACCEPT}
+            className="hidden"
+            onChange={(event) => {
+              const files = Array.from(event.currentTarget.files ?? []);
 
-            event.currentTarget.value = "";
+              event.currentTarget.value = "";
 
-            const origin =
-              uploadOrigin.current ??
-              screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+              const origin =
+                uploadOrigin.current ??
+                screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
 
-            uploadOrigin.current = null;
+              uploadOrigin.current = null;
 
-            if (files.length > 0) void ingestFiles(files, origin);
-          }}
-        />
-      </main>
+              if (files.length > 0) void ingestFiles(files, origin);
+            }}
+          />
+        </main>
+      </NodeActionsContext>
     </DragModeContext>
   );
 }

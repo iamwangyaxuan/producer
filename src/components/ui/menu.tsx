@@ -6,13 +6,38 @@ import Icon from "#/components/ui/icon";
 
 type ClassName<State> = string | ((state: State) => string | undefined) | undefined;
 
-function mergeClassName<State>(preset: string, className: ClassName<State>): ClassName<State> {
+export function mergeClassName<State>(
+  preset: string,
+  className: ClassName<State>
+): ClassName<State> {
   if (typeof className !== "function") return cn(preset, className);
 
   return (state) => cn(preset, className(state));
 }
 
-const SubmenuContext = createContext(false);
+/**
+ * Whether this popup is a submenu rather than the menu a trigger opened.
+ *
+ * Exported for `context-menu.tsx`, which shares these parts: inside a submenu
+ * a context menu is an ordinary menu again — Base UI's own positioning
+ * defaults switch back with it — so its `Content` has to know to step aside.
+ */
+export const SubmenuContext = createContext(false);
+
+/**
+ * The two class lists a menu surface is made of, kept apart from the component
+ * so the context menu can wear them without a second copy going stale.
+ *
+ * They are the *only* thing the two menus share by value rather than by
+ * component. Everything else — items, labels, separators, submenus — is
+ * literally the same Base UI part in both trees (`ContextMenu.Item` is an
+ * alias of `Menu.Item`, and so on down the list), so the wrappers below serve
+ * both without knowing which they are in.
+ */
+export const MENU_POSITIONER_CLASS = "z-50 min-w-48 outline-hidden";
+
+export const MENU_POPUP_CLASS =
+  "min-w-max origin-(--transform-origin) rounded-[18px] bg-[rgba(22,23,24,0.9)] p-2 text-foreground shadow-[0_16px_40px_rgba(0,0,0,0.45)] outline-hidden backdrop-blur-2xl transition-[transform,opacity] duration-150 ease-out max-h-(--available-height) overflow-y-auto overscroll-contain data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0 data-instant:transition-none";
 
 const itemClass = tv({
   base: "flex cursor-default items-center gap-2 rounded-xl p-2 text-[11px] leading-4 outline-hidden transition-colors duration-100 select-none data-highlighted:bg-[rgba(218,220,224,0.05)] active:blur-[1.5px] data-disabled:pointer-events-none data-disabled:text-neutral-500",
@@ -68,15 +93,9 @@ export function MenuContent({
         align="start"
         {...offsets}
         {...positioner}
-        className={mergeClassName("z-50 min-w-48 outline-hidden", positioner?.className)}
+        className={mergeClassName(MENU_POSITIONER_CLASS, positioner?.className)}
       >
-        <BaseMenu.Popup
-          {...props}
-          className={mergeClassName(
-            "min-w-max origin-(--transform-origin) rounded-[18px] bg-[rgba(22,23,24,0.9)] p-2 text-foreground shadow-[0_16px_40px_rgba(0,0,0,0.45)] outline-hidden backdrop-blur-2xl transition-[transform,opacity] duration-150 ease-out max-h-(--available-height) overflow-y-auto overscroll-contain data-starting-style:scale-95 data-starting-style:opacity-0 data-ending-style:scale-95 data-ending-style:opacity-0 data-instant:transition-none",
-            className
-          )}
-        />
+        <BaseMenu.Popup {...props} className={mergeClassName(MENU_POPUP_CLASS, className)} />
       </BaseMenu.Positioner>
     </BaseMenu.Portal>
   );
