@@ -36,7 +36,6 @@ import { useGenerations } from "#/components/block/studio/use-generations";
 import { useSnapGuides } from "#/components/block/studio/use-snap-guides";
 import { useUploads } from "#/components/block/studio/use-uploads";
 import { useViewportMemory } from "#/components/block/studio/use-viewport-memory";
-import Button from "#/components/ui/button";
 import ContextMenu from "#/components/ui/context-menu";
 import Icon from "#/components/ui/icon";
 import { ALLOWED_MIME, kindFromMime, MAX_BYTES } from "#/lib/asset-constraints";
@@ -596,22 +595,7 @@ function Studio() {
 
             <Panel position="top-left" className="m-0 p-6">
               <StudioToolbar projectId={projectId} name={projectName}>
-                {/* First, so the number keeps its place: the button beside it
-                  comes and goes with the node count, and a reading that jumped
-                  sideways whenever a second node landed would be a reading
-                  nobody could glance at. */}
                 <ZoomLevel />
-
-                {/* Nothing to tidy until there are two things to put in order, so
-                the control stays out of the way until it would do something.
-                It sits inside the strip rather than beside it because there is
-                only one top-left corner, and two panels claiming it would land
-                on top of each other. */}
-                {collab.nodes.length > 1 ? (
-                  <Button icon variant="ghost" size="md" aria-label="Tidy up" onClick={collab.tidy}>
-                    <Icon name="grid_view" className="text-base" />
-                  </Button>
-                ) : null}
               </StudioToolbar>
             </Panel>
 

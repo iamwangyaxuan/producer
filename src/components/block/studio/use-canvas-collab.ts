@@ -3,7 +3,7 @@ import type { Connection, Edge, EdgeChange, NodeChange, XYPosition } from "@xyfl
 import { useEffect, useMemo, useRef, useState } from "react";
 import type * as Y from "yjs";
 
-import { freePosition, tidyPositions } from "#/components/block/studio/canvas-placement";
+import { freePosition } from "#/components/block/studio/canvas-placement";
 import { nodeSize } from "#/components/block/studio/generation-node";
 import type { GenerationNode, GenerationNodeData } from "#/components/block/studio/generation-node";
 import {
@@ -627,25 +627,6 @@ export function useCanvasCollab({
     return node.id;
   }
 
-  function tidy() {
-    const current = session.current;
-
-    if (!current) return;
-
-    const layout = tidyPositions(nodesRef.current);
-
-    current.doc.transact(() => {
-      for (const [id, position] of layout) updateStoredPosition(current.nodes, id, position);
-    }, current.localOrigin);
-    commitNodes(
-      nodesRef.current.map((node) => {
-        const position = layout.get(node.id);
-
-        return position ? { ...node, position } : node;
-      })
-    );
-  }
-
   /**
    * This person's pointer, shared through awareness in flow coordinates so
    * every zoom level draws it in the right place. Throttled — every write is a
@@ -688,7 +669,6 @@ export function useCanvasCollab({
     connect,
     addGeneration,
     patchNodeData,
-    tidy,
     setCursor
   };
 }
