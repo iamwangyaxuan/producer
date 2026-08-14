@@ -55,7 +55,7 @@ export const fetchOrganizationProjects = createServerFn({ method: "GET" }).handl
     const session = await auth.api.getSession({ headers: getRequest().headers });
     const activeOrganizationId = session?.session.activeOrganizationId;
 
-    // `auth.ts` backfills a personal organization when a session is created, but
+    // `auth.ts` backfills a private organization when a session is created, but
     // the column is nullable, so this is a real branch rather than an assertion
     // waiting to be deleted. Turning a missing session into a redirect is the
     // `_auth` guard's job; all this path has to do is avoid an unscoped read.

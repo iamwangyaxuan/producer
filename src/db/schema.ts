@@ -11,6 +11,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   uuid
 } from "drizzle-orm/pg-core";
 
@@ -98,17 +99,65 @@ export const verification = pgTable(
   (table) => [index("verification_identifier_idx").on(table.identifier)]
 );
 
-export const organization = pgTable("organization", {
-  id: uuid("id").primaryKey().default(sql.raw(generate_id_fun)),
-  name: text("name").notNull(),
-  slug: text("slug").notNull().unique(),
-  logo: text("logo"),
-  createdAt: tstz("created_at").notNull(),
-  metadata: text("metadata"),
-  personalOwnerId: uuid("personal_owner_id")
-    .unique()
-    .references(() => user.id, { onDelete: "cascade" })
-});
+export const ORGANIZATION_TYPES = ["private", "team", "enterprise"] as const;
+
+export type OrganizationType = (typeof ORGANIZATION_TYPES)[number];
+
+/**
+ * `type` splits what used to be one nullable `personalOwnerId` column doing two
+ * jobs at once — "who owns this" and "is this the personal one". Separating them
+ * is what lets a user own more than one organization: exactly one `private`
+ * (their own workspace, created at sign up) and any number of `team` /
+ * `enterprise` ones.
+ *
+ * `ownerId` is not a membership — the owner is also a row in `member`, and every
+ * authorization path reads `member`, never this column. What it records is who
+ * the organization belongs to for billing and lifecycle purposes, which is why
+ * it is `restrict` rather than `cascade`: deleting a user whose organizations
+ * still exist has to be a deliberate act (reassign or delete them first), not a
+ * silent cascade that takes a whole team's projects and assets with it.
+ */
+export const organization = pgTable(
+  "organization",
+  {
+    id: uuid("id").primaryKey().default(sql.raw(generate_id_fun)),
+    name: text("name").notNull(),
+    slug: text("slug").notNull().unique(),
+    logo: text("logo"),
+    createdAt: tstz("created_at").notNull(),
+    metadata: text("metadata"),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "restrict" }),
+    type: text("type").$type<OrganizationType>().notNull(),
+    /**
+     * How many members this organization has *paid for* — a ceiling, not a
+     * count. It is an input, set by whatever decides billing, and deliberately
+     * never derived from `member`: the whole point of a purchased limit is that
+     * it stays put while the membership moves under it. `member` is the tally,
+     * this is the allowance, and a full team sits at the point where the two
+     * are equal.
+     *
+     * At least 1, because an organization always holds its owner. Nothing in
+     * the app writes this column yet — see `DEFAULT_SEATS` for what a new
+     * organization starts with, and the seat check in `auth.ts` for where the
+     * ceiling is actually enforced.
+     */
+    seat: integer("seat").default(1).notNull()
+  },
+  (table) => [
+    index("organization_ownerId_idx").on(table.ownerId),
+    // The "one private organization per user" rule, enforced where it cannot be
+    // raced: two concurrent sign ins for the same user would both pass an
+    // application-level check. Partial, so it says nothing about how many teams
+    // the same user owns.
+    uniqueIndex("organization_private_owner_idx")
+      .on(table.ownerId)
+      .where(sql`${table.type} = 'private'`),
+    check("organization_type_check", sql`${table.type} in ('private', 'team', 'enterprise')`),
+    check("organization_seat_check", sql`${table.seat} >= 1`)
+  ]
+);
 
 export const member = pgTable(
   "member",
@@ -344,6 +393,7 @@ export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),
   accounts: many(account),
   members: many(member),
+  ownedOrganizations: many(organization),
   invitations: many(invitation),
   ssoProviders: many(ssoProvider),
   projects: many(project)
@@ -363,7 +413,11 @@ export const accountRelations = relations(account, ({ one }) => ({
   })
 }));
 
-export const organizationRelations = relations(organization, ({ many }) => ({
+export const organizationRelations = relations(organization, ({ one, many }) => ({
+  owner: one(user, {
+    fields: [organization.ownerId],
+    references: [user.id]
+  }),
   members: many(member),
   invitations: many(invitation),
   projects: many(project),
