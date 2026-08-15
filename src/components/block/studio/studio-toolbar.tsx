@@ -44,6 +44,35 @@ export default function StudioToolbar({ projectId, name, children }: StudioToolb
   );
 }
 
+/**
+ * Shows and hides the prompt box along the bottom of the canvas.
+ *
+ * It earns its permanent place on the strip by being the one control that gives
+ * the board back: the composer is the largest thing standing on the canvas, and
+ * the reason to hide it — looking at what has been made, without a panel across
+ * the bottom of it — is exactly the moment when hunting through a menu for the
+ * way to do that is most annoying.
+ *
+ * The icon names the panel rather than the chat: `bottom_panel_close` while it
+ * is up, `bottom_panel_open` once it is down, so the glyph is always the thing
+ * the press will do — which is also what the label says, and why there is no
+ * `aria-pressed` on top of it. Two ways of saying the same state, one of which
+ * would be read out as a toggle whose "on" is ambiguous, is worse than one.
+ */
+export function ComposerToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <Button
+      icon
+      variant="ghost"
+      size="md"
+      aria-label={open ? "Hide the prompt box" : "Show the prompt box"}
+      onClick={onToggle}
+    >
+      <Icon name={open ? "bottom_panel_close" : "bottom_panel_open"} className="text-base" />
+    </Button>
+  );
+}
+
 /** Every step lands on a multiple of this, so the reading is always a round number. */
 const ZOOM_STEP = 0.05;
 

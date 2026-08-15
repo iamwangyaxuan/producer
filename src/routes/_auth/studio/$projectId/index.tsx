@@ -13,6 +13,7 @@ import {
 import type { NodeChange } from "@xyflow/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent as ReactMouseEvent, PointerEvent } from "react";
+import { cn } from "tailwind-variants";
 
 import { ConfirmDialog } from "#/components/block/project-dialogs";
 import AIComposer from "#/components/block/studio/ai-composer";
@@ -34,7 +35,7 @@ import {
   REFERENCE_EDGE_OPTIONS,
   REFERENCE_EDGE_TYPES
 } from "#/components/block/studio/reference-edge";
-import StudioToolbar, { ZoomLevel } from "#/components/block/studio/studio-toolbar";
+import StudioToolbar, { ComposerToggle, ZoomLevel } from "#/components/block/studio/studio-toolbar";
 import { useCanvasCollab } from "#/components/block/studio/use-canvas-collab";
 import { useGenerations } from "#/components/block/studio/use-generations";
 import { useSnapGuides } from "#/components/block/studio/use-snap-guides";
@@ -430,6 +431,15 @@ function Studio() {
   /** How the node menu reaches the composer — see `ComposerHandle`. */
   const composer = useRef<ComposerHandle>(null);
 
+  /**
+   * Whether the prompt box is up. Not remembered between visits, unlike the
+   * viewport: hiding it is something done for a moment — to look at the board
+   * without a panel across the bottom of it — and a canvas that opened with no
+   * way to type on it, because of a press three days ago, would read as broken
+   * rather than as restored.
+   */
+  const [composerOpen, setComposerOpen] = useState(true);
+
   const filePicker = useRef<HTMLInputElement>(null);
 
   function handlePaneContextMenu(event: ReactMouseEvent | globalThis.MouseEvent) {
@@ -478,7 +488,13 @@ function Studio() {
 
     setNodeMenu(null);
 
-    if (asset) composer.current?.attach(asset);
+    if (!asset) return;
+
+    // Putting a file into a box nobody can see is the same as doing nothing, so
+    // asking for it is also asking for the box back. `attach` focuses the
+    // editor, which on a hidden panel would additionally scroll it into view.
+    setComposerOpen(true);
+    composer.current?.attach(asset);
   }
 
   function downloadNode() {
@@ -630,6 +646,10 @@ function Studio() {
             <Panel position="top-left" className="m-0 p-6">
               <StudioToolbar projectId={projectId} name={projectName}>
                 <ZoomLevel />
+                <ComposerToggle
+                  open={composerOpen}
+                  onToggle={() => setComposerOpen((open) => !open)}
+                />
               </StudioToolbar>
             </Panel>
 
@@ -642,7 +662,40 @@ function Studio() {
             without the strip around it taking every drag along the bottom of the
             canvas with it. */}
             <Panel position="bottom-left" className="pointer-events-none m-0 w-full">
-              <div className="px-6 pb-6">
+              {/*
+               * Hidden by sliding out of the frame rather than by unmounting,
+               * and the draft is the reason: the editor is built once and holds
+               * the prompt someone is part-way through writing, so taking it out
+               * of the tree to hide it would throw that away — and put it back
+               * empty, which reads as the panel having eaten the text.
+               *
+               * `translate-y-full` is exactly its own height including the
+               * padding below it, so the whole thing clears the bottom edge with
+               * nothing to guess at; React Flow's own container clips it, so
+               * there is no stray scroll while it is out there. It leaves on the
+               * spring the rest of the app uses, whose overshoot lands on the
+               * way *in* — coming back it settles a few pixels past the mark and
+               * returns, which is what makes a panel feel thrown rather than
+               * dragged. Going out, the overshoot happens off-screen.
+               *
+               * `inert` is what makes hidden mean hidden: an element at zero
+               * opacity still takes clicks and still holds a tab stop, so
+               * without it the composer would be an invisible pane across the
+               * bottom of the canvas swallowing presses meant for the board.
+               *
+               * The transition names `translate`, not `transform`: Tailwind's
+               * `translate-y-*` writes the standalone `translate` property, so
+               * a transition watching `transform` covers nothing the utility
+               * sets and the panel jumps while only its opacity fades. Same
+               * trap as `transition-[opacity,scale]` on the menus.
+               */}
+              <div
+                inert={!composerOpen}
+                className={cn(
+                  "px-6 pb-6 transition-[translate,opacity] duration-450 ease-spring",
+                  composerOpen ? "translate-y-0 opacity-100" : "translate-y-full opacity-0"
+                )}
+              >
                 <AIComposer
                   ref={composer}
                   className="pointer-events-auto mx-auto w-full max-w-2xl"
