@@ -1106,8 +1106,22 @@ const CORNERS = [
 /** The node's corner radius — `rounded-xl` — in the node's own pixels. */
 const NODE_RADIUS = 12;
 
-/** Screen pixels of daylight between the node's edge and the mark. */
-const HANDLE_GAP = 6;
+/** How thick the corner mark is drawn, in the handle box's own units. */
+const HANDLE_STROKE = 2.5;
+
+/**
+ * How far outside the node's edge the mark's *centre line* runs — half its own
+ * thickness, and nothing more, so that the ink's inner edge lands exactly on
+ * the node's corner and the two curves touch.
+ *
+ * That half cannot be given up. The handle hands its inner region back by clip
+ * path (see {@link HANDLE_SIZE}) and the clip follows the node's boundary
+ * exactly, so a mark drawn *on* the boundary loses its inner half to the clip —
+ * which reads as a mark half as thick, not as a mark sitting flush. Offsetting
+ * by half the stroke puts the whole width in the only place it survives, with
+ * its edge against the node.
+ */
+const HANDLE_GAP = HANDLE_STROKE / 2;
 
 /**
  * The corner marks and clips, derived against the zoom instead of assumed at
@@ -1116,13 +1130,17 @@ const HANDLE_GAP = 6;
  * The handle box holds its screen size below 1:1 (autoScale), but the node's
  * corner radius does not — on screen it is `12 × zoom`. Drawn for a 12px
  * radius regardless, the mark's bend crept toward the corner as the board
- * zoomed out (about `1 + 5·zoom` pixels of gap at the diagonal against a
- * constant six at the ends), which read as a mark pinched at its middle. So
- * everything is computed from the radius as it appears on screen, `r`: the
- * node's centre of curvature sits at `c = 14 − r`, the mark is concentric at
- * radius `r + gap` — the nested-card rule — and the gap is an even six at
- * every zoom. At 1:1 and above the whole handle scales with the node, so `r`
- * is simply 12 and the geometry is the one this file always had.
+ * zoomed out, which read as a mark pinched at its middle. So everything is
+ * computed from the radius as it appears on screen, `r`: the node's centre of
+ * curvature sits at `c = 14 − r`, and the mark is concentric with it at radius
+ * `r + gap` — concentric being what keeps the two curves an even distance
+ * apart all the way round, which at this gap means touching all the way round.
+ * At 1:1 and above the whole handle scales with the node, so `r` is simply 12.
+ *
+ * The mark's ends have to move with the gap as well, and this is the part that
+ * is easy to miss: they sit on the node's straight edges, at `14 + gap`, not
+ * at a fixed inset. Left behind at the old six they would be six pixels out
+ * while the bend was one — an arc that no longer had a constant radius.
  *
  * The clips walk the node's true boundary: down the straight edge to the
  * tangent point at `c`, along the corner's arc between tangents, and out the
@@ -1140,9 +1158,11 @@ function cornerGeometry(zoom: number) {
   const c = round(14 - r);
   const m = round(14 + r);
   const reach = round(r + HANDLE_GAP);
+  // Where the mark meets the node's straight edges — see the note above.
+  const end = round(14 + HANDLE_GAP);
 
   return {
-    arc: `M 20 ${c} A ${reach} ${reach} 0 0 1 ${c} 20`,
+    arc: `M ${end} ${c} A ${reach} ${reach} 0 0 1 ${c} ${end}`,
     clips: {
       "bottom-right": `path("M 14 0 L 14 ${c} A ${r} ${r} 0 0 1 ${c} 14 L 0 14 L 0 28 L 28 28 L 28 0 Z")`,
       "bottom-left": `path("M 14 0 L 14 ${c} A ${r} ${r} 0 0 0 ${m} 14 L 28 14 L 28 28 L 0 28 L 0 0 Z")`,
@@ -1290,7 +1310,7 @@ function ResizeHandles({ visual }: { visual: boolean }) {
               d={arc}
               fill="none"
               className="stroke-blue-500"
-              strokeWidth="2.5"
+              strokeWidth={HANDLE_STROKE}
               strokeLinecap="round"
             />
           </svg>
