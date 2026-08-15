@@ -20,7 +20,6 @@
     "format": "oxfmt"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.116.0",
     "@base-ui/react": "^1.7.0",
     "@better-auth/scim": "1.6.26",
     "@better-auth/sso": "1.6.26",
@@ -45,6 +44,7 @@
     "@tiptap/starter-kit": "^3.30.1",
     "@tiptap/suggestion": "^3.30.1",
     "@xyflow/react": "^12.11.2",
+    "ai": "^7.0.65",
     "aws4fetch": "^1.0.20",
     "better-auth": "^1.6.26",
     "drizzle-kit": "^0.31.10",

@@ -1,7 +1,7 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { env } from "cloudflare:workers";
+import { generateObject } from "ai";
 import { z } from "zod";
+
+import { getGateway } from "#/server/generation/gateway";
 
 /**
  * Naming a generated file.
@@ -32,6 +32,22 @@ const titleSchema = z.object({
 
 /** Long enough for a phrase in any language, short enough to stay a filename. */
 const MAX_TITLE_LENGTH = 60;
+
+/**
+ * Small on purpose. This runs on every generation, in the path of it, and
+ * naming a file is not work that repays a larger model — the reason the old
+ * call reached for one was that it also had to be told to think as little as
+ * possible. Haiku is the cheap end of the same family, and through the Gateway
+ * it is one string away from being any other model on the list.
+ */
+const TITLE_MODEL = "anthropic/claude-haiku-4.5";
+
+/**
+ * Well under any provider's own patience: naming runs alongside the
+ * generation, so an answer that arrives after the bytes have landed is worth
+ * less than not blocking on it.
+ */
+const TITLE_TIMEOUT_MS = 20_000;
 
 const SYSTEM = [
   "You name files. Given the prompt someone wrote to generate a piece of media,",
@@ -67,35 +83,27 @@ export async function generateAssetTitle(prompt: string): Promise<string | null>
   // deep inside `fetch` — after this function has already returned its null,
   // so the `catch` below never sees it and the dev server shows an error
   // overlay for a call that was working as designed.
-  if (!env.ANTHROPIC_API_KEY) return null;
+  const gateway = getGateway();
+
+  if (!gateway) return null;
 
   try {
-    const client = new Anthropic({
-      apiKey: env.ANTHROPIC_API_KEY,
+    const { object } = await generateObject({
+      model: gateway.languageModel(TITLE_MODEL),
+      // A schema rather than a parsed reply: the SDK holds the model to the
+      // shape and hands back a typed object, so there is no format to agree on
+      // between the two ends and nothing to parse here.
+      schema: titleSchema,
+      system: SYSTEM,
+      prompt: trimmed,
       // One attempt. A retry here buys nothing — the fallback name is already
       // acceptable — and costs a second connection held open inside a request
       // that is only waiting on this to be polite.
       maxRetries: 0,
-      // Well under any provider's own patience: naming runs alongside the
-      // generation, so a slow answer that arrives after the bytes have landed
-      // is worth less than not blocking on it.
-      timeout: 20_000
+      abortSignal: AbortSignal.timeout(TITLE_TIMEOUT_MS)
     });
 
-    const response = await client.messages.parse({
-      model: "claude-opus-5",
-      // Room for the model to think before answering — thinking is on by
-      // default here, and `max_tokens` bounds thinking and reply together, so
-      // a budget sized to the title alone would truncate before the title.
-      max_tokens: 1024,
-      // Naming a file is not the kind of work that repays deliberation, and
-      // this call sits in the path of every generation.
-      output_config: { effort: "low", format: zodOutputFormat(titleSchema) },
-      system: SYSTEM,
-      messages: [{ role: "user", content: trimmed }]
-    });
-
-    const title = response.parsed_output?.title?.trim();
+    const title = object.title.trim();
 
     if (!title) return null;
 

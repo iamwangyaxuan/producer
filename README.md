@@ -8,7 +8,7 @@
 
 前置：Node + pnpm、一个 Postgres 实例、一份 R2 的 S3 凭证（上传走浏览器直传真实 R2，本地也不例外）。
 
-1. 在仓库根建 `.env.local`，填 `DATABASE_URL`、`BETTER_AUTH_URL` / `BETTER_AUTH_SECRET`、`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`、`VITE_GOOGLE_CLIENT_ID`、`ANTHROPIC_API_KEY`、`R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET`（本地桶是 `producer-media-dev`）。
+1. 在仓库根建 `.env.local`，填 `DATABASE_URL`、`BETTER_AUTH_URL` / `BETTER_AUTH_SECRET`、`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`、`VITE_GOOGLE_CLIENT_ID`、`AI_GATEWAY_API_KEY`、`R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET`（本地桶是 `producer-media-dev`）。
 2. 注意：`DATABASE_URL` 只供 drizzle-kit（`db:generate` / `db:migrate` / `db:studio`）使用，**应用运行时不读它**——dev 下数据库走 Hyperdrive 绑定的本地模拟，连接串来自 `wrangler.jsonc` 里 hyperdrive 的 `localConnectionString`。把它改成你自己的 Postgres 连接串（或设环境变量 `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE`），并保证与 `DATABASE_URL` 指向同一个库，否则迁移建表的库和应用连的库是两个地方。
 3. `pnpm install`
 4. `pnpm db:migrate` 应用 `drizzle/` 下的迁移（改了 `src/db/schema.ts` 之后先 `pnpm db:generate` 写一份新的）。
