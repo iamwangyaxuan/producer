@@ -73,6 +73,10 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 - **视口刻意不入共享文档**：它是唯一应该因人而异的画布状态，落 localStorage（`producer:canvas:<projectId>:viewport`），mount 后再恢复而不是走 `defaultViewport`——SSR 那侧没有 storage 可读。
 - **空格键是"移动模式"**（`useKeyPress("Space")`），平移与节点拖拽都等它，误拖推不动别人的排版。按下时要对聚焦在 button/a 上的空格 `preventDefault`（capture 阶段自己挂监听，`useKeyPress` 对 BUTTON/A 特意跳过 preventDefault 且没有开关）：否则"点完工具栏按钮 → 按住空格拖节点 → 松手"会把那次点击再触发一遍。**不能改用 `blur()` 摘焦点**——浏览器是在 keydown *派发之后*才把按钮标记 `:active`，比任何 handler/effect 都晚，摘了焦点等于把 `:active` 留在一个收不到 keyup 的元素上，`active:blur-[1.5px]` 于是永久糊着，只有在它上面重新按一次鼠标才复位。
 - 节点靠三个 context 拿它不该写进文档的东西：`DragModeContext`（按键级状态，写进每个节点的 data 等于一次按键重写整张图）、`NodeActionsContext`（`canRetry`/`retry` 描述的是**这个 tab 的能力**，不是结果的属性）、`RetryContext`（同一个 retry，已绑定到当前节点，省得深处的失败提示还要接 id 和 data）。
+- **画布上的连线只有一种含义：被参考的节点 → 由它生成的节点**（`reference-edge.tsx`）。提交时把 `referenceAssetIds`（`@` 提及给的是**资产** id）对到画布节点，与新节点同一个 Yjs 事务写进 `edges`——同一个文件被两个节点显示时两条都画，`@` 每个文件只给一次候选，挑其中一个当"真正的"来源没有依据。删节点时 React Flow 自己会把连着的边一并发成 `remove`，走 `applyEdgesChange` 落到文档。
+- **曲线是 React Flow 的，端点不是**（`getBezierPath` + `BaseEdge`）。端点由 `exitAt` 现算：从各自矩形中心朝对方出去、在边界处截断，顺带得出撞的是哪条边，交给 bezier 当 `sourcePosition`/`targetPosition`。这是 React Flow floating edges 的做法，**不能退回钉死在 handle 上**：节点停在被拖到的任意位置，钉在右侧的话，结果落在源左边的线会从远端出去、绕回来、横躺在两张卡片上。
+- **没有手画连线**：节点上那两个 handle 是锚点不是控件（`isConnectable={false}`，不可见、不吃 pointer），只为让 React Flow 肯放置这条边——它对端点解析不到 handle 的边是直接丢掉、不报错的。它们**摆在哪里不影响任何东西**，画线不读它们。
+- **线上没有任何自定义效果**：`getBezierPath` 取形、`BaseEdge` 画线，颜色是主题给 `--xy-edge-stroke` 的灰。没有箭头、没有流动的光、没有任何动画——一块摆满图片的板子上，会动的只应该是图片。方向因此只存在于 `source`/`target` 里，屏幕上不表达。
 
 ### 资产层（`asset` 表 + R2）
 

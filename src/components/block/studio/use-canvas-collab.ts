@@ -6,6 +6,7 @@ import type * as Y from "yjs";
 import { freePosition } from "#/components/block/studio/canvas-placement";
 import { nodeSize } from "#/components/block/studio/generation-node";
 import type { GenerationNode, GenerationNodeData } from "#/components/block/studio/generation-node";
+import { referenceEdge } from "#/components/block/studio/reference-edge";
 import {
   nextOrder,
   orderedEdges,
@@ -590,8 +591,17 @@ export function useCanvasCollab({
    * placement is worked out against the document itself rather than React
    * state because the document is updated synchronously by every local write —
    * two submissions in the same tick each see the node the other just placed.
+   *
+   * `references` are the nodes this generation was made from — the files the
+   * prompt named — and each one gets an arrow into the new node. They are
+   * written in the same transaction as the node, so the graph never reaches
+   * another machine as a result with its origins still on the way.
    */
-  function addGeneration(data: GenerationNodeData, centre: XYPosition): string | null {
+  function addGeneration(
+    data: GenerationNodeData,
+    centre: XYPosition,
+    references: readonly string[] = []
+  ): string | null {
     const current = session.current;
 
     if (!current) return null;
@@ -618,11 +628,31 @@ export function useCanvasCollab({
       data: stamped
     };
 
+    /**
+     * A reference whose node has gone is nothing to draw. The file behind it
+     * may well still exist — the composer names files, and deleting a node is
+     * what takes its file with it — but an arrow needs two ends, and the one
+     * this would leave is a coordinate nobody can see. Read off the document
+     * rather than off React state for the same reason the placement above is.
+     */
+    const arrows = references
+      .filter((source) => source !== node.id && current.nodes.has(source))
+      .map((source) => referenceEdge(source, node.id));
+
     current.doc.transact(() => {
       current.nodes.set(node.id, toStored(node, nextOrder(current.nodes)));
       current.nodeData.set(node.id, stamped);
+
+      for (const edge of arrows) current.edges.set(edge.id, edge);
     }, current.localOrigin);
     commitNodes([...nodesRef.current, node]);
+
+    // Sorted the way the document is read back, so the local list stacks
+    // crossing edges the same way every other machine — and this one after a
+    // reload — will.
+    if (arrows.length > 0) {
+      commitEdges([...edgesRef.current, ...arrows].sort((a, b) => a.id.localeCompare(b.id)));
+    }
 
     return node.id;
   }

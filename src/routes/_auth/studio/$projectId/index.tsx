@@ -30,6 +30,10 @@ import type {
 } from "#/components/block/studio/generation-node";
 import PresenceAvatars from "#/components/block/studio/presence-avatars";
 import PresenceCursors from "#/components/block/studio/presence-cursors";
+import {
+  REFERENCE_EDGE_OPTIONS,
+  REFERENCE_EDGE_TYPES
+} from "#/components/block/studio/reference-edge";
 import StudioToolbar, { ZoomLevel } from "#/components/block/studio/studio-toolbar";
 import { useCanvasCollab } from "#/components/block/studio/use-canvas-collab";
 import { useGenerations } from "#/components/block/studio/use-generations";
@@ -235,6 +239,31 @@ function Studio() {
     [assets, canvasAssetIds]
   );
 
+  /**
+   * The nodes behind the files a prompt named.
+   *
+   * The composer deals in asset ids — that is what `@` attaches and what the
+   * request carries — while the canvas draws arrows between nodes, so the two
+   * are matched up here, at the moment of sending, against the board as it
+   * stood when the files were picked.
+   *
+   * Every node showing a named file is a source, not one of them. `@` offers
+   * each file exactly once — the candidate list is built from a set of asset
+   * ids — so a file sitting on the board twice was pointed at through both
+   * copies, and electing one of the two to be "the" origin would be an
+   * arbitrary answer to a question that has none. The filter is over nodes, so
+   * no node can be named twice however the mentions were assembled.
+   */
+  function referencedNodeIds(assetIds: readonly string[] | undefined) {
+    if (!assetIds || assetIds.length === 0) return [];
+
+    const named = new Set(assetIds);
+
+    return collab.nodes
+      .filter((node) => node.data.assetId !== undefined && named.has(node.data.assetId))
+      .map((node) => node.id);
+  }
+
   function generate(submission: ComposerSubmission) {
     const centre = viewportCentre();
 
@@ -247,7 +276,8 @@ function Studio() {
         status: "pending",
         generatedBy: collab.clientId ?? undefined
       },
-      centre
+      centre,
+      referencedNodeIds(submission.referenceAssetIds)
     );
 
     if (id) void generations.start(id, projectId, submission, collab.patchNodeData);
@@ -584,6 +614,10 @@ function Studio() {
             onPaneContextMenu={handlePaneContextMenu}
             onNodeContextMenu={handleNodeContextMenu}
             nodeTypes={GENERATION_NODE_TYPES}
+            // Every edge on this board is a reference arrow, and none of them
+            // is a control — see `reference-edge.tsx` for both halves.
+            edgeTypes={REFERENCE_EDGE_TYPES}
+            defaultEdgeOptions={REFERENCE_EDGE_OPTIONS}
             colorMode="dark"
             aria-label="Canvas"
           >

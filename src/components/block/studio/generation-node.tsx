@@ -1,4 +1,4 @@
-import { NodeResizeControl, useReactFlow, useStore } from "@xyflow/react";
+import { Handle, NodeResizeControl, Position, useReactFlow, useStore } from "@xyflow/react";
 import type { ControlPosition, Node, NodeProps, NodeTypes } from "@xyflow/react";
 // The stylesheet is NOT imported here: `styles.css` pulls it in under
 // `layer(base)`, which is what lets the `.canvas-video` overrides there win
@@ -399,7 +399,36 @@ export default function GenerationNodeView({ id, data, selected }: NodeProps<Gen
       <NodeToolbar id={id} data={data} />
 
       <ResizeHandles visual={visual} />
+
+      <ReferenceHandles />
     </div>
+  );
+}
+
+/**
+ * Anchors, not controls.
+ *
+ * React Flow will not place an edge whose two ends do not each resolve to a
+ * handle — `getEdgePosition` answers null and the edge is dropped without a
+ * word — so the reference lines need one at either end even though nothing on
+ * this canvas is ever connected by hand. They are also what decides the shape:
+ * the endpoints and the direction the curve leaves at are read off these, so a
+ * line leaves the right of the node it came from and arrives at the left of the
+ * one it fed, which is the reading order the board is laid out in.
+ *
+ * Invisible, and inert. `isConnectable` off is what keeps React Flow's own
+ * `pointer-events: none` on them — the class that lifts it is the connection
+ * indicator — so an invisible box does not sit on the middle of every node's
+ * left and right edges taking presses, which is the same bug the resize handles
+ * are clipped to avoid and would be worse here for being unreachable by any
+ * gesture at all.
+ */
+function ReferenceHandles() {
+  return (
+    <>
+      <Handle type="target" position={Position.Left} isConnectable={false} className="opacity-0" />
+      <Handle type="source" position={Position.Right} isConnectable={false} className="opacity-0" />
+    </>
   );
 }
 
