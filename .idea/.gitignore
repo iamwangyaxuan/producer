@@ -8,5 +8,10 @@
 # Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
+# 里面钉的是各人自己那台机器的 JDBC 串,而本地库由 .env.local 的 DATABASE_URL
+# 和 hyperdrive 的 localConnectionString 各自决定,共享出去只会把别人指到不存在的库
+/dataSources.xml
+# 只是给上面那份数据源标方言,数据源不进版本库,它单独留着也没有对象可标
+/sqldialects.xml
 # 只映射到被忽略的 .claude/,对别人没有意义
 /jsonSchemas.xml
