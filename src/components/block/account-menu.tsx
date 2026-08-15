@@ -1,7 +1,7 @@
+import Avatar from "#/components/ui/avatar";
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
 import Menu from "#/components/ui/menu";
-import { initial } from "#/lib/initials";
 import { useSignOut } from "#/lib/session";
 
 export interface AccountMenuProps {
@@ -47,7 +47,11 @@ export default function AccountMenu({ user }: AccountMenuProps) {
           />
         }
       >
-        <Avatar user={user} />
+        {/* Decorative: the button beside it is already labelled with the
+            name this stands for, so announcing it again would only be noise.
+            The email is the fallback letter's source for an account that has
+            never set a name — it is the only other thing we know them by. */}
+        <Avatar decorative name={displayName} src={user.image} size="sm" />
         {/* `min-w-0` is what lets the truncation happen at all: a flex child
             refuses to shrink below its content without it. */}
         <span className="hidden min-w-0 flex-1 truncate text-left md:block">{displayName}</span>
@@ -93,31 +97,5 @@ export default function AccountMenu({ user }: AccountMenuProps) {
         ) : null}
       </Menu.Content>
     </Menu.Root>
-  );
-}
-
-/**
- * Decorative: the button beside it is already labelled with the name this stands
- * for, so announcing it again would only be noise.
- */
-function Avatar({ user }: AccountMenuProps) {
-  return (
-    <span
-      aria-hidden={true}
-      className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[rgba(218,220,224,0.16)] text-[10px] leading-none font-semibold text-neutral-200"
-    >
-      {user.image ? (
-        <img
-          src={user.image}
-          alt=""
-          // Google avatar URLs refuse requests that name another site as the
-          // referrer, and a broken face is worse than none.
-          referrerPolicy="no-referrer"
-          className="size-full object-cover"
-        />
-      ) : (
-        initial(user.name.trim() || user.email)
-      )}
-    </span>
   );
 }

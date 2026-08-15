@@ -1,9 +1,9 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
 
+import Avatar from "#/components/ui/avatar";
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
 import Menu from "#/components/ui/menu";
-import { initial } from "#/lib/initials";
 import { myOrganizationsQueryOptions, useSwitchOrganization } from "#/lib/organizations";
 import type { OrganizationMembership } from "#/lib/organizations";
 
@@ -105,16 +105,10 @@ export default function OrganizationSwitcher() {
   );
 }
 
-/** Organizations have no image column yet, so every one gets a monogram. */
+/**
+ * Organizations have no image column yet, so every one gets a monogram — the
+ * square avatar, because a circle is a person and this is a company.
+ */
 function Monogram({ name }: { name: string }) {
-  const first = initial(name);
-
-  return (
-    <span
-      aria-hidden
-      className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[rgba(218,220,224,0.12)] text-xs leading-none font-semibold text-neutral-200"
-    >
-      {first}
-    </span>
-  );
+  return <Avatar decorative name={name} shape="square" />;
 }
