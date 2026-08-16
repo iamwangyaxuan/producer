@@ -54,6 +54,12 @@
       "remote": true
     }
   ],
+  "send_email": [
+    {
+      "name": "EMAIL",
+      "remote": true
+    }
+  ],
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",

@@ -50,6 +50,20 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 - **`createServerFn` 是裸 HTTP 端点，`_auth` 路由守卫管不到它**，每个 handler 必须自己解析会话。
 - 库表 id 一律小写 uuidv7；所有接客户端 id 的入口共用 `src/lib/ids.ts` 的 `canonicalId`，查库前就拒掉非小写/非 uuid 的 id（DO 房间名按字节区分大小写，大写 URL 会分叉出第二个画布，且各入口对同一条 URL 必须给同一个答案）。画布节点 id 是例外：`crypto.randomUUID()`（v4），只作 Yjs key，不进库表也不进房间名。
 
+### 事务邮件（`src/server/email/*`）
+
+发六封信，都是有人在等的东西：组织邀请、地址验证、登录验证码、登录链接、密码重置，以及密码已被修改的通知。**不是营销通道**——退信会赔掉发送域的声誉，而赔掉的是这几封信的送达率。
+
+- 走 Workers 的 `send_email` 绑定（`env.EMAIL`），不是 REST API：Worker 里用绑定不需要任何 key。`wrangler.jsonc` 里这一项拼的是 **`name` 而不是 `binding`**，写错 wrangler 直接拒绝整个配置。
+- `"remote": true`，和 R2 桶同一个理由：本地模拟绑定会把信吞掉，而这两封信的全部意义就是机器外面有人收到。本地开发也打真实服务。
+- **发件域必须是已 onboard 的**（`wrangler email sending list`，目前发信用 `withproducer.com`），别的域会被 `E_SENDER_NOT_VERIFIED` 拒。所以 `SENDER` 不是一句可以随手改的文案——换域名要先 `wrangler email sending enable <domain>`（域名得在同一个 Cloudflare 账号下，命令会自己补 DNS 记录）。
+- **`sendEmail` 报告失败而不抛**：调用它的时候，信所讲的那件事已经落库了（邀请行在、验证 token 在），一次发信失败不该把成功的动作变成错误页。它必须**可见**——调用方 log，管理页给出可复制的邀请链接。
+- 模板是浅色、纯内联样式、无图片：邮件由别人的客户端渲染，深色模板总会在某个客户端里变成不可读；`<style>` 块会被好几个主流客户端剥掉，外链样式表全都会。按钮下面**重复一遍纯文本 URL**——客户端不渲染 anchor、被转成纯文本、企业网关改写 href，这三种情况下那行 URL 是唯一还能用的东西。
+- 验证信**不在注册时发**：验证过的地址在这里只解锁一件事（接受邀请），而多数账号永远收不到邀请；接受邀请页在真正需要的那一刻才请人验证，`callbackURL` 指回邀请本身，验证完直接回到能点"加入"的地方。
+- **成功也记一行日志**（带 Cloudflare 返回的 `messageId`）。把信交给 Email Service 之后我们就看不见了，没有这一行，"没收到"和"没发出去"在本地是分不清的；`messageId` 是 dashboard 索引投递记录的句柄。
+- 邀请信带 `Reply-To: <邀请人的地址>`，`From` 仍是 `noreply@`：后者是过滤器用来积累声誉的稳定身份，而"这谁邀请我的"该有个能问的地方——一封能回的事务邮件对过滤器本身也是正向信号。验证信没有这个人，所以不带。
+- **新域名冷启动是真实存在的**：`withproducer.com` 刚开通时，同一封信 Gmail 进收件箱（它主要看认证，而 SPF/DKIM/DMARC 都是齐的——注意 SPF 挂在 return-path 子域 `cf-bounce.<domain>` 上而不是根域，查根域会以为没配），iCloud 进垃圾箱（它更看发件域历史）。这不是配置问题，靠时间和"标记为非垃圾"积累，代码这边没有开关可拧。
+
 ### 画布协同（`src/lib/canvas/*`、`src/server/canvas-room.ts`、`use-canvas-collab.ts`）
 
 - 每个项目一个 `CanvasRoom` Durable Object，房间名 = projectId，`static options = { hibernate: true }`。
@@ -130,6 +144,7 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 - `r2_buckets` 的 `"remote": true` 是刻意的：预签名直传总是打真实 R2，本地模拟绑定会读到另一个桶。本地绑到 `producer-media-dev`。
 - R2 桶 CORS 按 origin（含端口）放行，目前只配了 3000 端口的两个源；用别的端口起 dev server 上传会被 CORS 拒。
 - 用 curl 打 `/api/auth/*` 必须带 `Origin`，否则一律 `MISSING_OR_NULL_ORIGIN`；且值要匹配 `BETTER_AUTH_URL`（`http://localhost:3000`）而非实际监听端口——3000 被占时 dev server 会换端口，请求打新端口、Origin 仍写 3000 才通得过。另外 `accept-invitation` 要求 `email_verified`，脚本里造的测试账号得先把这列置 true。
+- **测邮件流程时别真发信到 `@example.com`**：那个域不收邮件，退信会记在发送域头上。把 `wrangler.jsonc` 里 `send_email` 的 `"remote"` 临时改成 `false`，miniflare 会把每封信**写成文件**并在控制台打出路径（`.wrangler/tmp/email/*/email-text/*.txt`）——验证链接、重置链接都能直接从里面 grep 出来，注册→验证→自动登录、忘记密码→重置→会话清零这些整条链路都能在不发一封真信的前提下跑完。**跑完记得改回 `true`**。真要试投递，发给自己控制的地址。
 
 ## 代码风格
 
