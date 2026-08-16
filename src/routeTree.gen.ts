@@ -18,10 +18,12 @@ import { Route as ForgotPasswordIndexRouteImport } from './routes/forgot-passwor
 import { Route as LoginIndexRouteImport } from './routes/login/index'
 import { Route as ResetPasswordIndexRouteImport } from './routes/reset-password/index'
 import { Route as SignupIndexRouteImport } from './routes/signup/index'
+import { Route as AuthAcceptInvitationInvitationIdRouteImport } from './routes/_auth/accept-invitation.$invitationId'
 import { Route as AuthStudioProjectIdRouteRouteImport } from './routes/_auth/studio/$projectId/route'
 import { Route as ApiAssetsIndexRouteImport } from './routes/api/assets/index'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as AuthDashboardBillingIndexRouteImport } from './routes/_auth/_dashboard/billing/index'
+import { Route as AuthDashboardOrganizationMembersRouteImport } from './routes/_auth/_dashboard/organization/members'
 import { Route as AuthDashboardProjectsIndexRouteImport } from './routes/_auth/_dashboard/projects/index'
 import { Route as AuthBillingCheckoutSessionIdRouteImport } from './routes/_auth/billing/checkout.$sessionId'
 import { Route as AuthBillingTopupSessionIdRouteImport } from './routes/_auth/billing/topup.$sessionId'
@@ -73,6 +75,12 @@ const SignupIndexRoute = SignupIndexRouteImport.update({
   path: '/signup/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthAcceptInvitationInvitationIdRoute =
+  AuthAcceptInvitationInvitationIdRouteImport.update({
+    id: '/accept-invitation/$invitationId',
+    path: '/accept-invitation/$invitationId',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthStudioProjectIdRouteRoute =
   AuthStudioProjectIdRouteRouteImport.update({
     id: '/studio/$projectId',
@@ -93,6 +101,12 @@ const AuthDashboardBillingIndexRoute =
   AuthDashboardBillingIndexRouteImport.update({
     id: '/billing/',
     path: '/billing/',
+    getParentRoute: () => AuthDashboardRouteRoute,
+  } as any)
+const AuthDashboardOrganizationMembersRoute =
+  AuthDashboardOrganizationMembersRouteImport.update({
+    id: '/organization/members',
+    path: '/organization/members',
     getParentRoute: () => AuthDashboardRouteRoute,
   } as any)
 const AuthDashboardProjectsIndexRoute =
@@ -146,8 +160,10 @@ export interface FileRoutesByFullPath {
   '/reset-password/': typeof ResetPasswordIndexRoute
   '/signup/': typeof SignupIndexRoute
   '/studio/$projectId': typeof AuthStudioProjectIdRouteRouteWithChildren
+  '/accept-invitation/$invitationId': typeof AuthAcceptInvitationInvitationIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
+  '/organization/members': typeof AuthDashboardOrganizationMembersRoute
   '/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
   '/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
@@ -165,8 +181,10 @@ export interface FileRoutesByTo {
   '/login': typeof LoginIndexRoute
   '/reset-password': typeof ResetPasswordIndexRoute
   '/signup': typeof SignupIndexRoute
+  '/accept-invitation/$invitationId': typeof AuthAcceptInvitationInvitationIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets': typeof ApiAssetsIndexRoute
+  '/organization/members': typeof AuthDashboardOrganizationMembersRoute
   '/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
   '/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
@@ -188,8 +206,10 @@ export interface FileRoutesById {
   '/reset-password/': typeof ResetPasswordIndexRoute
   '/signup/': typeof SignupIndexRoute
   '/_auth/studio/$projectId': typeof AuthStudioProjectIdRouteRouteWithChildren
+  '/_auth/accept-invitation/$invitationId': typeof AuthAcceptInvitationInvitationIdRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
+  '/_auth/_dashboard/organization/members': typeof AuthDashboardOrganizationMembersRoute
   '/_auth/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
   '/_auth/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
@@ -210,8 +230,10 @@ export interface FileRouteTypes {
     | '/reset-password/'
     | '/signup/'
     | '/studio/$projectId'
+    | '/accept-invitation/$invitationId'
     | '/api/auth/$'
     | '/api/assets/'
+    | '/organization/members'
     | '/billing/checkout/$sessionId'
     | '/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
@@ -229,8 +251,10 @@ export interface FileRouteTypes {
     | '/login'
     | '/reset-password'
     | '/signup'
+    | '/accept-invitation/$invitationId'
     | '/api/auth/$'
     | '/api/assets'
+    | '/organization/members'
     | '/billing/checkout/$sessionId'
     | '/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
@@ -251,8 +275,10 @@ export interface FileRouteTypes {
     | '/reset-password/'
     | '/signup/'
     | '/_auth/studio/$projectId'
+    | '/_auth/accept-invitation/$invitationId'
     | '/api/auth/$'
     | '/api/assets/'
+    | '/_auth/_dashboard/organization/members'
     | '/_auth/billing/checkout/$sessionId'
     | '/_auth/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
@@ -343,6 +369,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SignupIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_auth/accept-invitation/$invitationId': {
+      id: '/_auth/accept-invitation/$invitationId'
+      path: '/accept-invitation/$invitationId'
+      fullPath: '/accept-invitation/$invitationId'
+      preLoaderRoute: typeof AuthAcceptInvitationInvitationIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/studio/$projectId': {
       id: '/_auth/studio/$projectId'
       path: '/studio/$projectId'
@@ -369,6 +402,13 @@ declare module '@tanstack/react-router' {
       path: '/billing'
       fullPath: '/billing/'
       preLoaderRoute: typeof AuthDashboardBillingIndexRouteImport
+      parentRoute: typeof AuthDashboardRouteRoute
+    }
+    '/_auth/_dashboard/organization/members': {
+      id: '/_auth/_dashboard/organization/members'
+      path: '/organization/members'
+      fullPath: '/organization/members'
+      preLoaderRoute: typeof AuthDashboardOrganizationMembersRouteImport
       parentRoute: typeof AuthDashboardRouteRoute
     }
     '/_auth/_dashboard/projects/': {
@@ -424,11 +464,13 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthDashboardRouteRouteChildren {
+  AuthDashboardOrganizationMembersRoute: typeof AuthDashboardOrganizationMembersRoute
   AuthDashboardBillingIndexRoute: typeof AuthDashboardBillingIndexRoute
   AuthDashboardProjectsIndexRoute: typeof AuthDashboardProjectsIndexRoute
 }
 
 const AuthDashboardRouteRouteChildren: AuthDashboardRouteRouteChildren = {
+  AuthDashboardOrganizationMembersRoute: AuthDashboardOrganizationMembersRoute,
   AuthDashboardBillingIndexRoute: AuthDashboardBillingIndexRoute,
   AuthDashboardProjectsIndexRoute: AuthDashboardProjectsIndexRoute,
 }
@@ -453,6 +495,7 @@ const AuthStudioProjectIdRouteRouteWithChildren =
 interface AuthRouteRouteChildren {
   AuthDashboardRouteRoute: typeof AuthDashboardRouteRouteWithChildren
   AuthStudioProjectIdRouteRoute: typeof AuthStudioProjectIdRouteRouteWithChildren
+  AuthAcceptInvitationInvitationIdRoute: typeof AuthAcceptInvitationInvitationIdRoute
   AuthBillingCheckoutSessionIdRoute: typeof AuthBillingCheckoutSessionIdRoute
   AuthBillingTopupSessionIdRoute: typeof AuthBillingTopupSessionIdRoute
 }
@@ -460,6 +503,7 @@ interface AuthRouteRouteChildren {
 const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthDashboardRouteRoute: AuthDashboardRouteRouteWithChildren,
   AuthStudioProjectIdRouteRoute: AuthStudioProjectIdRouteRouteWithChildren,
+  AuthAcceptInvitationInvitationIdRoute: AuthAcceptInvitationInvitationIdRoute,
   AuthBillingCheckoutSessionIdRoute: AuthBillingCheckoutSessionIdRoute,
   AuthBillingTopupSessionIdRoute: AuthBillingTopupSessionIdRoute,
 }

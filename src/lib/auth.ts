@@ -14,6 +14,7 @@ import { stripe as stripeClient, stripeWebhookSecret } from "#/server/billing/st
 import { handleStripeEvent } from "#/server/billing/stripe-events";
 import { sendEmail } from "#/server/email/send";
 import {
+  invitationEmail,
   passwordChangedEmail,
   passwordResetEmail,
   signInCodeEmail,
@@ -261,6 +262,38 @@ export const auth = betterAuth({
             type: { type: "string", required: false, input: true },
             seat: { type: "number", required: false, input: false }
           }
+        }
+      },
+      /**
+       * The invitation row is already committed by the time this runs, and
+       * `sendEmail` reports failure rather than throwing — so a mail that does
+       * not go out leaves a perfectly good pending invitation behind instead of
+       * a 500 on an action that already happened. The members page lists that
+       * invitation with a copyable link, which is the fallback for exactly this.
+       *
+       * The link carries only the invitation id, and that is safe on its own:
+       * accepting re-checks that the signed-in user's address is the one
+       * invited, so a forwarded or leaked URL still lets nobody else in.
+       */
+      sendInvitationEmail: async ({ invitation, organization, inviter }) => {
+        const sent = await sendEmail({
+          to: invitation.email,
+          // Replies reach the person who actually sent this, not a mailbox
+          // nobody reads. "Who is this and why am I being added?" is a fair
+          // question, and the answer is one reply away.
+          replyTo: inviter.user.email,
+          ...invitationEmail({
+            organizationName: organization.name,
+            // `name` is NOT NULL but may be whitespace; the address is the one
+            // thing every account has.
+            inviterName: inviter.user.name.trim() || inviter.user.email,
+            url: `${env.BETTER_AUTH_URL}/accept-invitation/${invitation.id}`,
+            expiresAt: invitation.expiresAt
+          })
+        });
+
+        if (!sent) {
+          console.error(`invitation ${invitation.id} was created but its email did not send`);
         }
       },
       organizationHooks: {

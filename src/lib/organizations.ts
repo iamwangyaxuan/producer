@@ -5,6 +5,7 @@ import { getRequest } from "@tanstack/react-start/server";
 import { and, asc, eq } from "drizzle-orm";
 
 import { getDB, schema } from "#/db";
+import type { OrganizationType } from "#/db/schema";
 import { auth } from "#/lib/auth";
 import { authClient } from "#/lib/auth-client";
 
@@ -12,8 +13,28 @@ import { authClient } from "#/lib/auth-client";
 export interface OrganizationMembership {
   id: string;
   name: string;
+  /**
+   * Together these decide whether the sidebar offers the members page: there is
+   * nobody to manage in a `private` workspace, and managing the other two is
+   * the owner's job. Both come from this read rather than a second one because
+   * the switcher already joins `member` to `organization` — the two columns are
+   * on rows it is holding anyway.
+   */
+  type: OrganizationType;
+  /** This user's role in it, straight off the membership row. */
+  role: string;
   /** Whether the current session is scoped to it. */
   active: boolean;
+}
+
+/**
+ * Whether this membership should show a members page. Exported because the
+ * sidebar asks it to decide on a link and the page itself asks it again to
+ * decide whether to render at all — the second one is the answer that matters,
+ * since a hidden link is not a permission.
+ */
+export function canManageMembers(organization: OrganizationMembership | undefined) {
+  return Boolean(organization && organization.type !== "private" && organization.role === "owner");
 }
 
 /**
@@ -32,7 +53,12 @@ export const fetchMyOrganizations = createServerFn({ method: "GET" }).handler(
     if (!session) return [];
 
     const rows = await getDB()
-      .select({ id: schema.organization.id, name: schema.organization.name })
+      .select({
+        id: schema.organization.id,
+        name: schema.organization.name,
+        type: schema.organization.type,
+        role: schema.member.role
+      })
       .from(schema.organization)
       .innerJoin(
         schema.member,

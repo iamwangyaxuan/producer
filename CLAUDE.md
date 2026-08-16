@@ -105,6 +105,19 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 
 - `fake-stripe.ts` 相应长出了三样东西：`price_data` 内联价格（充值金额只为这一单存在，为每个面额建一个 Price 等于把费率表放两处）、`mode: "payment"` 的结算（产出 `payment_intent`，带 `amount_received` 而不只是 `amount`——那才是处理方该读的字段）、以及按 `mode` 分流的假结账页地址。
 
+### 成员与邀请（`src/lib/members.ts`、`src/lib/invitations.ts`）
+
+两个文件是同一批行的两种视角，鉴权模型完全相反，所以没合成一个：`members.ts` 是**拥有者视角**（读成员名单、发邀请、撤邀请、移除人），`invitations.ts` 是**收件人视角**（读一条邀请、接受、拒绝）。
+
+- **读走 `createServerFn`，写走 `authClient`**，这不是风格问题：`inviteMember` 是发邮件的那一步，`removeMember` 会跑 organizationHooks，`acceptInvitation` 会跑 `beforeAcceptInvitation` 里的席位检查——绕过它们直接写 `member`/`invitation` 表，等于把 SSO/SCIM 已有的那个缺口再开一个，而且是从自家 UI 开的。写路径一律不传 `organizationId`，让端点回落到会话的活动组织。
+- **`fetchOrganizationMembers` 自己也查 owner**，不只靠侧栏藏链接：server fn 是裸 HTTP 端点，谁登录了都能打，而一个组织的成员名单正是不该因为"知道 URL"就拿到的东西。四种拿不到的情况（没会话／没活动组织／private／不是 owner）**答案完全一样**，都是 `organization: null`。
+- **接受邀请要求邮箱已验证**，这条不能关。better-auth 的判据是 `hasBuiltInOpaqueInvitationIdGeneration`——我们设了 `advanced.database.generateId: false`（id 由 Postgres 的 `uuidv7()` 给），于是它认定 id 不是它的不透明 id，默认要求 `emailVerified`。看着像个麻烦，实际是必需的：email/password 注册不校验邮箱所有权，关掉它就等于任何人都能注册 `ceo@target.com` 然后接受发给对方的邀请走进组织。**因此邮箱验证信也一并接上了**（见下一节）。
+- **`/accept-invitation/$id` 的每一种拒绝都给出路**，这是 `InvitationView` 做成判别联合而不是"一个可空的 blocker"的原因：登错账号（→ 登出）、邮箱没验证（→ 发验证信，验证完跳回本页）、席位满了（→ 说清邀请还有效）、邀请失效（→ 回项目页）。四种情况的出路各不相同，一句"你不能接受"会把它们全糊掉。
+- **席位满是提前说的**，不是提交后才发现：真正的检查在 `beforeAcceptInvitation` 里，离按钮很远，"点了没反应只弹个错"是最差的知情方式。管理页同理，标题旁常驻 `N of M seats used`。
+- 邀请链接里**只有 invitation id**，可以随便转发：接受时会重新比对登录者的邮箱和被邀请的邮箱，链接落到别人手里打开的是一个拒绝页。这也是管理页敢提供"复制链接"的原因——邮件没到时的后路。
+- 移除按钮不出现在 owner 和自己身上：移除 owner 会让 `organization.ownerId` 指向一个非成员，而"移除自己"是另一件事（better-auth 有 `leave`）。
+- 确认框的描述**用一个单独记住的名字**而不是 `removing?.name`：对话框退出动画有 150ms，那期间它还挂着，而成功回调已经把 `removing` 置 null——屏幕上会有 150ms 的 "undefined will lose access"。
+
 ### 账号与密码（`routes/login|signup|forgot-password|reset-password|email-verified`）
 
 签出状态的五个页面共用 `components/block/auth-shell.tsx`：它们在 `_auth` 之外，也在应用那套只有暗色的皮肤之外——是陌生人看到的第一屏，所以跟随系统主题，而不是替他决定。样式常量抽出来是因为五个页面本来要各抄一份，那正是某个没人再看第二眼的页面上焦点环变成另一种蓝的方式。
@@ -220,7 +233,7 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 - 双人协同测试：第二个账号开 `http://app.localhost:3000`（独立 cookie jar，已加进 `auth.ts` 的 `trustedOrigins`）。localhost 的 cookie 不分端口，同端口换账号会串。
 - `r2_buckets` 的 `"remote": true` 是刻意的：预签名直传总是打真实 R2，本地模拟绑定会读到另一个桶。本地绑到 `producer-media-dev`。
 - R2 桶 CORS 按 origin（含端口）放行，目前只配了 3000 端口的两个源；用别的端口起 dev server 上传会被 CORS 拒。
-- 用 curl 打 `/api/auth/*` 必须带 `Origin`，否则一律 `MISSING_OR_NULL_ORIGIN`；且值要匹配 `BETTER_AUTH_URL`（`http://localhost:3000`）而非实际监听端口——3000 被占时 dev server 会换端口，请求打新端口、Origin 仍写 3000 才通得过。另外 `accept-invitation` 要求 `email_verified`，脚本里造的测试账号得先把这列置 true。
+- 用 curl 打 `/api/auth/*` 必须带 `Origin`，否则一律 `MISSING_OR_NULL_ORIGIN`；且值要匹配 `BETTER_AUTH_URL`（`http://localhost:3000`）而非实际监听端口——3000 被占时 dev server 会换端口，请求打新端口、Origin 仍写 3000 才通得过。另外 `accept-invitation` 要求 `email_verified`（原因见"成员与邀请"），脚本里造的测试账号得先把这列置 true。
 - **测邮件流程时别真发信到 `@example.com`**：那个域不收邮件，退信会记在发送域头上。把 `wrangler.jsonc` 里 `send_email` 的 `"remote"` 临时改成 `false`，miniflare 会把每封信**写成文件**并在控制台打出路径（`.wrangler/tmp/email/*/email-text/*.txt`）——验证链接、重置链接都能直接从里面 grep 出来，注册→验证→自动登录、忘记密码→重置→会话清零这些整条链路都能在不发一封真信的前提下跑完。**跑完记得改回 `true`**。真要试投递，发给自己控制的地址。
 
 ## 代码风格
