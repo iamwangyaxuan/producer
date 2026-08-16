@@ -1,5 +1,6 @@
 import { createFileRoute, notFound } from "@tanstack/react-router";
 
+import { canvasSnapshotQueryOptions } from "#/lib/canvas-snapshot";
 import { projectQueryOptions } from "#/lib/projects";
 
 export const Route = createFileRoute("/_auth/studio/$projectId")({
@@ -15,9 +16,21 @@ export const Route = createFileRoute("/_auth/studio/$projectId")({
       projectQueryOptions(context.session.session.activeOrganizationId, params.projectId)
     );
 
-    // Missing, archived, or another organization's — the server does not
-    // distinguish those, and neither should this page.
+    // Missing or another organization's — the server does not distinguish those,
+    // and neither should this page. Archived is no longer among them: it opens,
+    // read-only.
     if (!project) throw notFound();
+
+    // The archived canvas is built from the saved snapshot rather than from a
+    // socket, so it is data this loader has to resolve — same contract as the
+    // project above, and the reason is the same one every page here follows:
+    // a `useSuspenseQuery` whose key the loader never touched has nothing in
+    // the cache to read on the first render. Only for archived projects,
+    // because a live canvas gets its document from the room and would be
+    // paying for a decode it throws away.
+    if (project.archived) {
+      await context.queryClient.ensureQueryData(canvasSnapshotQueryOptions(params.projectId));
+    }
 
     return { name: project.name };
   },

@@ -1,3 +1,4 @@
+import { Toast } from "@base-ui/react/toast";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 
@@ -6,7 +7,12 @@ import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
 import Menu from "#/components/ui/menu";
 import { initial } from "#/lib/initials";
-import { useArchiveProject, useDeleteProject, useRenameProject } from "#/lib/projects";
+import {
+  useArchiveProject,
+  useDeleteProject,
+  useRenameProject,
+  useRestoreProject
+} from "#/lib/projects";
 
 export interface ProjectCardProps {
   id: string;
@@ -15,6 +21,15 @@ export interface ProjectCardProps {
   description: string | null;
   /** Nullable in the database *and* able to 404 — both land on the generated cover. */
   image: string | null;
+  /**
+   * Whether this card is in the archive.
+   *
+   * It changes one thing and nothing else: the menu offers restore instead of
+   * archive. The name links to the studio either way, because an archived
+   * project opens there read-only. No dimming or badge: every card in that list
+   * is archived, so a mark that appears on all of them distinguishes nothing.
+   */
+  archived?: boolean;
 }
 
 /**
@@ -84,7 +99,13 @@ function CoverImage({ src }: { src: string }) {
   );
 }
 
-export default function ProjectCard({ id, name, description, image }: ProjectCardProps) {
+export default function ProjectCard({
+  id,
+  name,
+  description,
+  image,
+  archived = false
+}: ProjectCardProps) {
   // `name` is NOT NULL but nothing stops it being whitespace, and an empty
   // heading would leave the card with no accessible name at all.
   const title = name.trim() || "Untitled project";
@@ -143,6 +164,12 @@ export default function ProjectCard({ id, name, description, image }: ProjectCar
              * project's name as its text, so its accessible name is the name.
              * Its own outline is dropped because the card draws that ring
              * around itself instead of around three words of text.
+             *
+             * An archived card links too, and to the same place: the studio
+             * opens an archived project read-only rather than answering "no
+             * such project", so there is somewhere to go and the card should
+             * take you there. Looking at what was made is the whole reason to
+             * keep an archive.
              */}
             <Link
               to="/studio/$projectId"
@@ -152,7 +179,7 @@ export default function ProjectCard({ id, name, description, image }: ProjectCar
               {title}
             </Link>
           </h2>
-          <ProjectActions id={id} name={title} />
+          <ProjectActions id={id} name={title} archived={archived} />
         </div>
         {description ? (
           <p className="line-clamp-2 text-sm text-neutral-400">{description}</p>
@@ -174,13 +201,38 @@ type ProjectAction = "rename" | "archive" | "delete";
  * with it, so a dialog nested inside would be unmounted by the click that was
  * supposed to open it.
  */
-function ProjectActions({ id, name }: { id: string; name: string }) {
+function ProjectActions({ id, name, archived }: { id: string; name: string; archived: boolean }) {
   const [action, setAction] = useState<ProjectAction | null>(null);
   const [draftName, setDraftName] = useState(name);
 
   const rename = useRenameProject();
   const archive = useArchiveProject();
+  const restore = useRestoreProject();
   const remove = useDeleteProject();
+  const toast = Toast.useToastManager();
+
+  /**
+   * The one action with no dialog in front of it, because there is nothing to
+   * confirm: restoring loses nothing and archiving it again is one click away.
+   * That leaves nowhere on screen to report a failure — the menu closes on
+   * click and the card it belonged to moves out of this list on success — so
+   * this is the one that goes to the toast the canvas already uses.
+   */
+  function restoreNow() {
+    restore.mutate(
+      { id },
+      {
+        onError: (error) =>
+          toast.add({
+            type: "error",
+            title: "Could not restore the project",
+            // A failed server function can carry driver-level detail, so only
+            // the development build shows the original message.
+            description: import.meta.env.DEV ? error.message : "Please try again."
+          })
+      }
+    );
+  }
 
   function open(next: ProjectAction) {
     // The hooks outlive the dialogs — this component stays mounted while they
@@ -233,10 +285,17 @@ function ProjectActions({ id, name }: { id: string; name: string }) {
             <Icon name="edit" className="text-sm" />
             Rename
           </Menu.Item>
-          <Menu.Item onClick={() => open("archive")}>
-            <Icon name="archive" className="text-sm" />
-            Archive
-          </Menu.Item>
+          {archived ? (
+            <Menu.Item onClick={restoreNow}>
+              <Icon name="unarchive" className="text-sm" />
+              Restore
+            </Menu.Item>
+          ) : (
+            <Menu.Item onClick={() => open("archive")}>
+              <Icon name="archive" className="text-sm" />
+              Archive
+            </Menu.Item>
+          )}
           <Menu.Separator />
           {/* Only the label is red. The row's highlight stays neutral because
               overriding the menu's preset would be a specificity tie broken by
@@ -262,7 +321,7 @@ function ProjectActions({ id, name }: { id: string; name: string }) {
         open={action === "archive"}
         onClose={close}
         title="Archive project?"
-        description={`“${name}” will be hidden from this list. Nothing in the app can bring it back yet.`}
+        description={`“${name}” will move to the archive. You can restore it from there whenever you like.`}
         confirmLabel="Archive"
         error={archive.error}
         pending={archive.isPending}

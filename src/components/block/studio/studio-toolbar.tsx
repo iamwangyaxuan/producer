@@ -13,6 +13,12 @@ export interface StudioToolbarProps {
   projectId: string;
   /** Already resolved by the caller, including the fallback for a blank name. */
   name: string;
+  /**
+   * An archived project. The menu keeps only the way out, and the strip says so
+   * out loud — a canvas that silently refuses everything reads as broken, while
+   * one wearing the word "Archived" reads as finished.
+   */
+  readOnly?: boolean;
   /** Canvas controls that belong on the same strip; separated when present. */
   children?: ReactNode;
 }
@@ -30,10 +36,23 @@ export interface StudioToolbarProps {
  * blur), so the popup reads as the strip unfolding rather than as a second
  * panel arriving from somewhere else.
  */
-export default function StudioToolbar({ projectId, name, children }: StudioToolbarProps) {
+export default function StudioToolbar({
+  projectId,
+  name,
+  readOnly = false,
+  children
+}: StudioToolbarProps) {
   return (
     <div className="flex items-center gap-1 rounded-[18px] bg-[rgba(22,23,24,0.9)] p-1.5 shadow-[0_16px_40px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
-      <ProjectMenu projectId={projectId} name={name} />
+      <ProjectMenu projectId={projectId} name={name} readOnly={readOnly} />
+      {/* Beside the name, not somewhere else on the canvas: the question it
+          answers — why is there nothing to do here — is asked *of the project*,
+          and this strip is where the project is named. */}
+      {readOnly ? (
+        <span className="mr-1 shrink-0 rounded-md bg-[rgba(218,220,224,0.08)] px-2 py-0.5 text-[11px] leading-4 text-neutral-300">
+          Archived
+        </span>
+      ) : null}
       {children ? (
         <>
           <ToolbarSeparator />
@@ -234,7 +253,15 @@ type ProjectAction = "rename" | "delete";
  * the moment a row is clicked, so a dialog nested inside would be unmounted by
  * the very click meant to open it.
  */
-function ProjectMenu({ projectId, name }: { projectId: string; name: string }) {
+function ProjectMenu({
+  projectId,
+  name,
+  readOnly
+}: {
+  projectId: string;
+  name: string;
+  readOnly: boolean;
+}) {
   const router = useRouter();
   const navigate = useNavigate();
 
@@ -284,18 +311,26 @@ function ProjectMenu({ projectId, name }: { projectId: string; name: string }) {
             <Icon name="arrow_back" className="text-sm" />
             Back to projects
           </Menu.LinkItem>
-          <Menu.Separator />
-          <Menu.Item onClick={() => open("rename")}>
-            <Icon name="edit" className="text-sm" />
-            Rename
-          </Menu.Item>
-          {/* Only the label is red. The row's highlight stays neutral because
-              overriding the menu's preset would be a specificity tie broken by
-              whichever rule Tailwind happens to emit last. */}
-          <Menu.Item className="text-red-400" onClick={() => open("delete")}>
-            <Icon name="delete" className="text-sm" />
-            Delete
-          </Menu.Item>
+          {/* Nothing below the separator on an archived project, so the menu is
+              one row: the way back. Restoring is deliberately not offered here
+              either — it is an edit, and the archive list is where a project is
+              taken out of the archive. */}
+          {readOnly ? null : (
+            <>
+              <Menu.Separator />
+              <Menu.Item onClick={() => open("rename")}>
+                <Icon name="edit" className="text-sm" />
+                Rename
+              </Menu.Item>
+              {/* Only the label is red. The row's highlight stays neutral
+                  because overriding the menu's preset would be a specificity
+                  tie broken by whichever rule Tailwind happens to emit last. */}
+              <Menu.Item className="text-red-400" onClick={() => open("delete")}>
+                <Icon name="delete" className="text-sm" />
+                Delete
+              </Menu.Item>
+            </>
+          )}
         </Menu.Content>
       </Menu.Root>
 

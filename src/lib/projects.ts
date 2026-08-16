@@ -46,14 +46,18 @@ const NO_ORGANIZATION: OrganizationProjects = {
 };
 
 /**
- * A server function is a plain HTTP endpoint — the `_auth` route guard does not
- * stand in front of it — so the tenant scope is resolved here, from the session
- * cookie. The handler deliberately takes no input at all: there is no
- * organization id a client could forge, which is a stronger guarantee than
- * accepting one and remembering to validate it.
+ * Which of the two lists is being asked for. Note what is *not* here: the
+ * organization. A server function is a plain HTTP endpoint — the `_auth` route
+ * guard does not stand in front of it — so the tenant scope is resolved from
+ * the session cookie, and there is no organization id a client could forge.
+ * `archived` is safe to accept because it narrows within that scope rather than
+ * choosing it: either value returns this organization's rows and nobody else's.
  */
-export const fetchOrganizationProjects = createServerFn({ method: "GET" }).handler(
-  async (): Promise<OrganizationProjects> => {
+const projectListInput = z.object({ archived: z.boolean().default(false) });
+
+export const fetchOrganizationProjects = createServerFn({ method: "GET" })
+  .validator(projectListInput)
+  .handler(async ({ data }): Promise<OrganizationProjects> => {
     const session = await auth.api.getSession({ headers: getRequest().headers });
     const activeOrganizationId = session?.session.activeOrganizationId;
 
@@ -96,12 +100,13 @@ export const fetchOrganizationProjects = createServerFn({ method: "GET" }).handl
           image: schema.project.image
         })
         .from(schema.project)
-        // Archived projects are hidden because nothing in the app can un-archive
-        // one yet; listing them would be a dead end with no way out of it.
+        // The two lists are the same read with this flag flipped, which is what
+        // keeps the archive from drifting into a different set of rules about
+        // ordering, limits or scope than the list it is the other half of.
         .where(
           and(
             eq(schema.project.organizationId, activeOrganizationId),
-            eq(schema.project.archived, false)
+            eq(schema.project.archived, data.archived)
           )
         )
         // Most recently touched first. `name` then `id` break ties so the order
@@ -125,8 +130,7 @@ export const fetchOrganizationProjects = createServerFn({ method: "GET" }).handl
       projects: rows.slice(0, PROJECT_LIST_LIMIT),
       hasMore: rows.length > PROJECT_LIST_LIMIT
     };
-  }
-);
+  });
 
 /**
  * `organizationId` keys the cache and is never sent anywhere — the server
@@ -135,6 +139,11 @@ export const fetchOrganizationProjects = createServerFn({ method: "GET" }).handl
  * painting the previous tenant's cached list out of memory. The server decides
  * what is *read*; the key only decides what is *remembered*.
  *
+ * `archived` *is* sent, and also keys the cache: the two views are two answers,
+ * and archiving a project changes both of them. It goes in as an object so the
+ * segment cannot be mistaken for the project id that `projectQueryOptions` puts
+ * in the same position.
+ *
  * `staleTime` is load bearing rather than a tuning knob. The query client is
  * built with no defaults, so at 0 the SSR-dehydrated entry is already stale the
  * moment it hydrates and `useSuspenseQuery` refetches it immediately — every
@@ -142,10 +151,13 @@ export const fetchOrganizationProjects = createServerFn({ method: "GET" }).handl
  * `useSuspenseQuery` throws on error, so one flaky background refetch would
  * replace an already-rendered grid with the error screen.
  */
-export function organizationProjectsQueryOptions(organizationId: string | null | undefined) {
+export function organizationProjectsQueryOptions(
+  organizationId: string | null | undefined,
+  archived = false
+) {
   return queryOptions({
-    queryKey: ["organizations", organizationId ?? null, "projects"],
-    queryFn: ({ signal }) => fetchOrganizationProjects({ signal }),
+    queryKey: ["organizations", organizationId ?? null, "projects", { archived }],
+    queryFn: ({ signal }) => fetchOrganizationProjects({ data: { archived }, signal }),
     staleTime: 30_000
   });
 }
@@ -154,6 +166,13 @@ export function organizationProjectsQueryOptions(organizationId: string | null |
 export interface ProjectDetail {
   id: string;
   name: string;
+  /**
+   * Archived projects open, and open read-only. The flag travels with the
+   * project rather than being asked for separately because every consumer needs
+   * it in the same breath as the name: the studio decides which canvas to build
+   * from it, and the toolbar decides what it is allowed to offer.
+   */
+  archived: boolean;
 }
 
 /**
@@ -187,7 +206,11 @@ export const fetchProject = createServerFn({ method: "GET" })
     if (!session || !activeOrganizationId) return null;
 
     const rows = await getDB()
-      .select({ id: schema.project.id, name: schema.project.name })
+      .select({
+        id: schema.project.id,
+        name: schema.project.name,
+        archived: schema.project.archived
+      })
       .from(schema.project)
       .innerJoin(
         schema.member,
@@ -196,14 +219,14 @@ export const fetchProject = createServerFn({ method: "GET" })
           eq(schema.member.userId, session.user.id)
         )
       )
-      // Archived projects answer as missing for the reason the list hides them:
-      // nothing in the app can un-archive one, so opening it would be a dead end.
+      // Archived projects are *not* excluded here any more. They open, as a
+      // canvas that can be read and not written — which is also why this read
+      // stayed the same shape: what changes is the answer to "may I edit it",
+      // and that is `archived`, not the absence of a row. The write paths keep
+      // their own barrier in `getProjectAccess`, which still refuses archived
+      // unless a caller explicitly asks otherwise.
       .where(
-        and(
-          eq(schema.project.id, data.id),
-          eq(schema.project.organizationId, activeOrganizationId),
-          eq(schema.project.archived, false)
-        )
+        and(eq(schema.project.id, data.id), eq(schema.project.organizationId, activeOrganizationId))
       )
       .limit(1);
 
@@ -289,7 +312,11 @@ export const createProject = createServerFn({ method: "POST" }).handler(
     const [created] = await db
       .insert(schema.project)
       .values({ organizationId, createdBy: userId })
-      .returning({ id: schema.project.id, name: schema.project.name });
+      .returning({
+        id: schema.project.id,
+        name: schema.project.name,
+        archived: schema.project.archived
+      });
 
     return created;
   }
@@ -331,9 +358,11 @@ export const renameProject = createServerFn({ method: "POST" })
   });
 
 /**
- * Archiving only hides the project: the list filters `archived` out, so the row
- * survives with everything hanging off it. Nothing in the app can un-archive
- * one yet, which is why the confirmation that fronts this says so.
+ * Archiving only moves the project between the two lists: the row survives with
+ * everything hanging off it, and {@link restoreProject} brings it back. That is
+ * why the confirmation in front of this is a plain one rather than the red kind
+ * — nothing here is lost, and the only irreversible action on a project is the
+ * delete below.
  */
 export const archiveProject = createServerFn({ method: "POST" })
   .validator(projectInput)
@@ -343,6 +372,28 @@ export const archiveProject = createServerFn({ method: "POST" })
     const updated = await db
       .update(schema.project)
       .set({ archived: true })
+      .where(and(eq(schema.project.id, data.id), eq(schema.project.organizationId, organizationId)))
+      .returning({ id: schema.project.id });
+
+    if (updated.length === 0) throw new Error(NOT_FOUND);
+
+    return { id: data.id };
+  });
+
+/**
+ * The way back. Written as its own endpoint rather than folding both into one
+ * that takes a boolean, because the two are not the same action from anywhere
+ * else's point of view: archiving asks for confirmation and restoring does not,
+ * and a single `setArchived` would have to be told which of those it is anyway.
+ */
+export const restoreProject = createServerFn({ method: "POST" })
+  .validator(projectInput)
+  .handler(async ({ data }) => {
+    const { db, organizationId } = await requireActiveOrganization();
+
+    const updated = await db
+      .update(schema.project)
+      .set({ archived: false })
       .where(and(eq(schema.project.id, data.id), eq(schema.project.organizationId, organizationId)))
       .returning({ id: schema.project.id });
 
@@ -430,6 +481,10 @@ export function useRenameProject() {
 
 export function useArchiveProject() {
   return useProjectMutation((data: { id: string }) => archiveProject({ data }));
+}
+
+export function useRestoreProject() {
+  return useProjectMutation((data: { id: string }) => restoreProject({ data }));
 }
 
 export function useDeleteProject() {

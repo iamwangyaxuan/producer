@@ -25,6 +25,7 @@ import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as AuthDashboardBillingIndexRouteImport } from './routes/_auth/_dashboard/billing/index'
 import { Route as AuthDashboardOrganizationMembersRouteImport } from './routes/_auth/_dashboard/organization/members'
 import { Route as AuthDashboardProjectsIndexRouteImport } from './routes/_auth/_dashboard/projects/index'
+import { Route as AuthDashboardProjectsArchiveRouteImport } from './routes/_auth/_dashboard/projects/archive'
 import { Route as AuthBillingCheckoutSessionIdRouteImport } from './routes/_auth/billing/checkout.$sessionId'
 import { Route as AuthBillingTopupSessionIdRouteImport } from './routes/_auth/billing/topup.$sessionId'
 import { Route as AuthStudioProjectIdIndexRouteImport } from './routes/_auth/studio/$projectId/index'
@@ -115,6 +116,12 @@ const AuthDashboardProjectsIndexRoute =
     path: '/projects/',
     getParentRoute: () => AuthDashboardRouteRoute,
   } as any)
+const AuthDashboardProjectsArchiveRoute =
+  AuthDashboardProjectsArchiveRouteImport.update({
+    id: '/projects/archive',
+    path: '/projects/archive',
+    getParentRoute: () => AuthDashboardRouteRoute,
+  } as any)
 const AuthBillingCheckoutSessionIdRoute =
   AuthBillingCheckoutSessionIdRouteImport.update({
     id: '/billing/checkout/$sessionId',
@@ -164,6 +171,7 @@ export interface FileRoutesByFullPath {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
   '/organization/members': typeof AuthDashboardOrganizationMembersRoute
+  '/projects/archive': typeof AuthDashboardProjectsArchiveRoute
   '/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
   '/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
@@ -185,6 +193,7 @@ export interface FileRoutesByTo {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets': typeof ApiAssetsIndexRoute
   '/organization/members': typeof AuthDashboardOrganizationMembersRoute
+  '/projects/archive': typeof AuthDashboardProjectsArchiveRoute
   '/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
   '/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
@@ -210,6 +219,7 @@ export interface FileRoutesById {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
   '/_auth/_dashboard/organization/members': typeof AuthDashboardOrganizationMembersRoute
+  '/_auth/_dashboard/projects/archive': typeof AuthDashboardProjectsArchiveRoute
   '/_auth/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
   '/_auth/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
@@ -234,6 +244,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/assets/'
     | '/organization/members'
+    | '/projects/archive'
     | '/billing/checkout/$sessionId'
     | '/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
@@ -255,6 +266,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/assets'
     | '/organization/members'
+    | '/projects/archive'
     | '/billing/checkout/$sessionId'
     | '/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
@@ -279,6 +291,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/assets/'
     | '/_auth/_dashboard/organization/members'
+    | '/_auth/_dashboard/projects/archive'
     | '/_auth/billing/checkout/$sessionId'
     | '/_auth/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
@@ -418,6 +431,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthDashboardProjectsIndexRouteImport
       parentRoute: typeof AuthDashboardRouteRoute
     }
+    '/_auth/_dashboard/projects/archive': {
+      id: '/_auth/_dashboard/projects/archive'
+      path: '/projects/archive'
+      fullPath: '/projects/archive'
+      preLoaderRoute: typeof AuthDashboardProjectsArchiveRouteImport
+      parentRoute: typeof AuthDashboardRouteRoute
+    }
     '/_auth/billing/checkout/$sessionId': {
       id: '/_auth/billing/checkout/$sessionId'
       path: '/billing/checkout/$sessionId'
@@ -465,12 +485,14 @@ declare module '@tanstack/react-router' {
 
 interface AuthDashboardRouteRouteChildren {
   AuthDashboardOrganizationMembersRoute: typeof AuthDashboardOrganizationMembersRoute
+  AuthDashboardProjectsArchiveRoute: typeof AuthDashboardProjectsArchiveRoute
   AuthDashboardBillingIndexRoute: typeof AuthDashboardBillingIndexRoute
   AuthDashboardProjectsIndexRoute: typeof AuthDashboardProjectsIndexRoute
 }
 
 const AuthDashboardRouteRouteChildren: AuthDashboardRouteRouteChildren = {
   AuthDashboardOrganizationMembersRoute: AuthDashboardOrganizationMembersRoute,
+  AuthDashboardProjectsArchiveRoute: AuthDashboardProjectsArchiveRoute,
   AuthDashboardBillingIndexRoute: AuthDashboardBillingIndexRoute,
   AuthDashboardProjectsIndexRoute: AuthDashboardProjectsIndexRoute,
 }

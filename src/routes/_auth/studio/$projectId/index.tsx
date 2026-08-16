@@ -7,7 +7,6 @@ import {
   Panel,
   ReactFlow,
   ReactFlowProvider,
-  useKeyPress,
   useReactFlow
 } from "@xyflow/react";
 import type { NodeChange } from "@xyflow/react";
@@ -19,6 +18,7 @@ import { ConfirmDialog } from "#/components/block/project-dialogs";
 import AIComposer from "#/components/block/studio/ai-composer";
 import type { ComposerHandle, ComposerSubmission } from "#/components/block/studio/ai-composer";
 import AlignmentGuides from "#/components/block/studio/alignment-guides";
+import ArchivedCanvas from "#/components/block/studio/archived-canvas";
 import {
   DragModeContext,
   GENERATION_NODE_TYPES,
@@ -37,6 +37,7 @@ import {
 } from "#/components/block/studio/reference-edge";
 import StudioToolbar, { ComposerToggle, ZoomLevel } from "#/components/block/studio/studio-toolbar";
 import { useCanvasCollab } from "#/components/block/studio/use-canvas-collab";
+import { dragModeProps, useDragMode } from "#/components/block/studio/use-drag-mode";
 import { useGenerations } from "#/components/block/studio/use-generations";
 import { useSnapGuides } from "#/components/block/studio/use-snap-guides";
 import { useUploads } from "#/components/block/studio/use-uploads";
@@ -63,9 +64,38 @@ export const Route = createFileRoute("/_auth/studio/$projectId/")({
 function RouteComponent() {
   return (
     <ReactFlowProvider>
-      <Studio />
+      <StudioRoute />
     </ReactFlowProvider>
   );
+}
+
+/**
+ * Which canvas this project gets.
+ *
+ * The branch is here, above both, rather than inside one component holding a
+ * `readOnly` flag: an archived project and a live one differ in almost
+ * everything that is mounted, not in what a few controls are set to, and a flag
+ * threaded through the editor would leave every writing affordance on screen
+ * waiting to be individually switched off — including the next one somebody
+ * adds. Two trees means the read-only page can only do what it renders.
+ */
+function StudioRoute() {
+  const { projectId } = Route.useParams();
+  const { session } = Route.useRouteContext();
+
+  const { data: project } = useSuspenseQuery(
+    projectQueryOptions(session.session.activeOrganizationId, projectId)
+  );
+
+  // `name` is NOT NULL but nothing stops it being whitespace, and a toolbar
+  // with nothing in it is a toolbar nobody can find.
+  const projectName = project?.name.trim() || "Untitled project";
+
+  if (project?.archived) {
+    return <ArchivedCanvas projectId={projectId} projectName={projectName} />;
+  }
+
+  return <Studio projectName={projectName} />;
 }
 
 /**
@@ -82,27 +112,9 @@ const DOT_SPACING = 16;
  */
 const UPLOAD_ACCEPT = Object.values(ALLOWED_MIME).flat().join(",");
 
-function Studio() {
+function Studio({ projectName }: { projectName: string }) {
   const { projectId } = Route.useParams();
   const { session } = Route.useRouteContext();
-
-  /**
-   * The layout route's loader has already resolved this exact key, so the
-   * suspense flavour never actually suspends here — it is used for the promise
-   * it makes about `data` instead. The read is live rather than taken from the
-   * loader because a rename invalidates the query, not the loader: reading the
-   * cache is what lets the strip show the new name the moment it lands.
-   *
-   * It can still go `null`, and briefly does: deleting the project refetches
-   * this key before the navigation away has finished.
-   */
-  const { data: project } = useSuspenseQuery(
-    projectQueryOptions(session.session.activeOrganizationId, projectId)
-  );
-
-  // `name` is NOT NULL but nothing stops it being whitespace, and a toolbar
-  // with nothing in it is a toolbar nobody can find.
-  const projectName = project?.name.trim() || "Untitled project";
 
   /**
    * The project's files. Not the canvas's — a node derives its URL from the id
@@ -120,61 +132,7 @@ function Studio() {
   const viewportCentre = () =>
     screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
 
-  /**
-   * Whether the space bar is being held, which is what puts the canvas into
-   * its move-things-around mode: panning and node dragging both wait for it,
-   * so a stray drag cannot shove the work about. React Flow's own hook rather
-   * than a hand-rolled listener — it already ignores typing in inputs,
-   * prevents the page scroll, and lets go when the window loses focus.
-   */
-  const dragMode = useKeyPress("Space");
-
-  /**
-   * The one thing the hook deliberately does not do: on a focused button it
-   * leaves the browser's default alone — `useKeyPress` skips `preventDefault`
-   * when the event target is a BUTTON or an A, on purpose, so that a canvas
-   * cannot quietly break the keyboard on its own toolbar. There is no option to
-   * turn that off, so a canvas that means something else by the space bar has to
-   * say so itself.
-   *
-   * Here it has to. The focus is usually still sitting on a toolbar button
-   * without anyone realising: closing a menu hands focus back to the trigger it
-   * was opened from, and a pointer never lights the focus ring, so the button
-   * looks idle while the browser still treats it as the one being typed at. The
-   * space bar then does both jobs — enter drag mode, and press that button on
-   * release.
-   *
-   * It has to be `preventDefault` rather than dropping the focus, which is what
-   * this did before. Both stop the press on keyup, but the browser marks the
-   * button `:active` *after* the keydown is dispatched — later than any handler
-   * or effect that could blur it. Blurring therefore left `:active` set on an
-   * element that no longer had focus, and keyup went to the body instead, so
-   * nothing ever cleared it: `active:blur-[1.5px]` stayed on and the button was
-   * left permanently smudged until someone pressed a mouse button on it again.
-   * Preventing the default kills the `:active` and the click at the one moment
-   * that governs both, and leaves the focus where the keyboard user put it.
-   *
-   * Capture, because a trigger may stop the keydown from reaching the document.
-   * Enter still activates buttons and still opens menus, which is what keeps
-   * this from being a keyboard dead end.
-   */
-  useEffect(() => {
-    const swallowSpace = (event: KeyboardEvent) => {
-      const target = event.target;
-
-      if (
-        event.code === "Space" &&
-        target instanceof HTMLElement &&
-        (target.tagName === "BUTTON" || target.tagName === "A")
-      ) {
-        event.preventDefault();
-      }
-    };
-
-    document.addEventListener("keydown", swallowSpace, true);
-
-    return () => document.removeEventListener("keydown", swallowSpace, true);
-  }, []);
+  const dragMode = useDragMode();
 
   /** Who this tab is, to everyone else on the canvas. */
   const me = useMemo(
@@ -598,28 +556,13 @@ function Studio() {
           onPointerLeave={() => collab.setCursor(null)}
         >
           <ReactFlow
-            // Also what React Flow reads to swap in its own grab and grabbing
+            // The shared gesture model — see `use-drag-mode.ts`. It is also
+            // what React Flow reads to swap in its own grab and grabbing
             // cursors, so the pointer follows the mode without being told twice.
-            panOnDrag={dragMode}
+            {...dragModeProps(dragMode)}
+            // The one prop the archived board does not share: only this canvas
+            // has nodes that can be picked up at all.
             nodesDraggable={dragMode}
-            // The wheel follows the same modifier the drag does. At rest it
-            // moves the camera — panning is the constant gesture on a board,
-            // and a wheel that zooms by default keeps yanking the world out
-            // from under the pointer. With space down the wheel zooms instead:
-            // space already means "move things around", and scale is the one
-            // camera move a plain wheel cannot make.
-            panOnScroll={!dragMode}
-            zoomOnScroll={dragMode}
-            // React Flow's own space-bar shortcut, switched off by name: its
-            // default `panActivationKeyCode` is Space, and while that key is
-            // down it forces `panOnScroll` back on — quietly overriding the
-            // two props above and turning the drag-mode wheel back into a pan.
-            // This canvas already gives the space bar its meaning itself.
-            panActivationKeyCode={null}
-            // A double-click is a gesture nodes get to mean things with (and
-            // misfire on — two fast clicks on a video's transport); the camera
-            // lurching in on every one made it unusable for both.
-            zoomOnDoubleClick={false}
             nodes={collab.nodes}
             edges={collab.edges}
             onNodesChange={handleNodesChange}

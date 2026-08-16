@@ -220,6 +220,16 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 
 - 路径别名 `#/*` 与 `@/*` 都指向 `src/`，代码里统一用 `#/`。
 - 路由在 `src/routes/`：`_auth` 做会话守卫并把 session 放进 route context；`_auth/studio/$projectId/route.tsx` 这层负责 loader 与文档标题，子路由从 query 缓存读。API 路由用 `createFileRoute(...).server.handlers`。
+- **项目有两个列表，是同一次读把 `archived` 翻过来**（`components/block/projects-page.tsx` 一个组件，`projects/index.tsx` 与 `projects/archive.tsx` 两层薄壳）。做成两个路由而不是 `?archived=1`：它是个"去处"，侧栏要链接它、浏览器要能后退到它、地址要能收藏。两个视图的差异全部集中在文件顶部的 `COPY` 里，好让差异读起来是一张清单而不是两个文件的 diff。
+- **归档项目可以打开，但是只读的**（`components/block/studio/archived-canvas.tsx`）。做法不是给实时画布加一个 `readOnly` 开关,而是**换一棵树**:编辑器那八百行里全是会写的东西——提示框、上传、拖放、两个右键菜单、删除对话框、吸附层、在场、协同 socket——用一个标志穿过去,意味着它们全都留在屏幕上戴着 `disabled`,并且下一个被加进来的编辑入口默认是开着的。这里它们不是被禁用,是不存在。
+- **真正让它只读的是没有 socket**:`canAccessProjectCanvas` 依旧拒绝归档项目,所以那个持有可写文档的 Durable Object 从这个页面根本够不着;画布是从 `canvas_snapshot` 里那份房间最后保存的快照重建的(`lib/canvas-snapshot.ts`)。一个"只读模式的协同画布"只能在浏览器里强制,那不算强制。
+- 过去的线是 Yjs update 本身(base64),不是解出来的节点:server fn 的返回值必须是可序列化的,而 React Flow 的 `Node`/`Edge` 不是——它们描述的是活的画布对象而非载荷,检查器拒绝得对。在客户端解码还有第二个好处:归档的板子是由**排布实时板子的同一段代码**摆出来的,连 `toNode` 对"有几何没有 data"那条规则都一样,而不是由一份可能摆得不一样的第二实现。
+- **写入闸门一行没动**:`getProjectAccess` 默认仍然拒绝归档,`allowArchived` 是显式选项、只有那条读路径用。这条默认值就是闸门本身——每个会改东西的调用方(开始生成、建上传、开房间)不需要记得去问就拿到拒绝,归档因此是一件"挡住写"的事,而不是每个新端点都要想一遍的标志位。
+- **归档画布的节点必须保持 `elementsSelectable`**,这是一条会咬人的规则:React Flow 只在节点 `isSelectable || isDraggable || 挂了鼠标事件` 时给它 `pointer-events: all`,否则给 `none`。把两个开关都关掉,整块节点就变成穿透的——视频的播放条和音频节点的播放键全都收不到按下。选中在这里没有任何代价(删除键已经关掉,选中的节点做不了任何事),它换来的是节点里的控件还活着。
+- **手势模型两块画布共用一份**(`use-drag-mode.ts` 的 `useDragMode` + `dragModeProps`)。归档板子照样是"按住空格才是移动模式":静止时指针是 default、滚轮平移,按下空格才出现小手、滚轮变缩放。曾经给只读画布单独设过 `panOnDrag: true`,理由是"没东西可拖就不需要那个修饰键"——结果是小手常驻,而且同一块板子有了两套习惯。只读不改变它是一块板子。
+- **归档画布的快照必须在 loader 里预取**:它走 `useSuspenseQuery`,而 loader 从没碰过的 key 在首次渲染时缓存里什么都没有——症状是工具栏正常、画布一个节点都没有。跟这个仓库其它页面同一条约定。
+- 因此归档卡片的标题**又是链接了**:有地方可去了,而"看看当年做了什么"正是留着归档的全部理由。
+- **归档现在可以恢复**，所以归档确认框不再说"拿不回来"。归档卡片没有加灰度或角标——那一页每张卡都是归档的，人人都有的标记什么也没区分出来。恢复是唯一没有确认框的动作（它不损失任何东西），因此也是唯一把失败报给 toast 的——菜单点完就关，卡片成功后就从这一页消失，屏幕上没有别的地方能放这条错误。
 - `components/ui/` 是 Base UI + `tailwind-variants` 的薄封装（暗色主题，样式挂 `data-*` 而非伪类）；`components/block/` 是业务块，画布相关全在 `components/block/studio/`。
 - 第三方 CSS 用 `@import ... layer(base)` 引入（React Flow、video.js 的样式表无 layer，否则会盖过 utility）。**组件里不要再 import 一次**：`generation-node.tsx` 只动态 `import("video.js")` 取播放器，样式表由 `styles.css` 一处引入——第二次无 layer 的 import 会盖掉那里的 `.canvas-video` 覆写，安静地把原皮肤装回来。
 - `/menu-preview` 是 `components/ui/menu` 的沙盒页，不在 `_auth` 下，也不是产品里的页面——改菜单组件时拿它对照，别当成有人在用的路由去维护。

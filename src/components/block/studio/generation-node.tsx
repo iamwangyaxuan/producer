@@ -100,6 +100,21 @@ export const NodeActionsContext = createContext<NodeActions | null>(null);
  * record it has no other use for. `null` when this node has nothing to try
  * again with.
  */
+/**
+ * Whether this canvas can be changed at all.
+ *
+ * An archived project renders the same nodes from the same document and offers
+ * none of the things that would write to it. It is a context rather than a prop
+ * threaded through every body for the reason `DragModeContext` is one: the
+ * answer is the same for every node on the board and changes only when a whole
+ * different canvas is mounted, so passing it down would re-render all of them
+ * to tell them something none of them can act on individually.
+ *
+ * Read-only is what the *canvas* is, not what a node is: the node still knows
+ * how to draw its own delete button, and simply is not asked to.
+ */
+export const ReadOnlyContext = createContext(false);
+
 const RetryContext = createContext<(() => void) | null>(null);
 
 /**
@@ -348,12 +363,17 @@ export default function GenerationNodeView({ id, data, selected }: NodeProps<Gen
   const visual = isVisual(data);
   const dragMode = useContext(DragModeContext);
   const actions = useContext(NodeActionsContext);
+  const readOnly = useContext(ReadOnlyContext);
 
   // Asked only of a node that actually failed: `canRetry` reaches into what
   // this tab is holding, and there is nothing to ask about a node that is
   // still running or already finished.
+  // Retrying is a write, so a read-only canvas does not offer it either — the
+  // failure it belongs to is history there, not something to act on.
   const retry =
-    data.status === "failed" && actions?.canRetry(id, data) ? () => actions.retry(id, data) : null;
+    !readOnly && data.status === "failed" && actions?.canRetry(id, data)
+      ? () => actions.retry(id, data)
+      : null;
 
   return (
     // `group` so the corner handles can wait for the pointer, and `size-full`
@@ -368,7 +388,13 @@ export default function GenerationNodeView({ id, data, selected }: NodeProps<Gen
         // cursor through while the modifier is held. At rest it would otherwise
         // hand out the pointer it uses for anything selectable, which reads as a
         // promise this canvas does not keep until the modifier is down.
-        !dragMode && "cursor-default"
+        !dragMode && "cursor-default",
+        // A read-only node is selectable only so that the controls inside it
+        // keep receiving presses — see `archived-canvas.tsx` — and React Flow's
+        // selectable cursor would offer a pointing hand over a node with
+        // nothing to press. While the space bar is down the board is a camera,
+        // and it should say the same thing here as it does on the editor.
+        readOnly && dragMode && "cursor-grab"
       )}
     >
       <div
@@ -398,7 +424,10 @@ export default function GenerationNodeView({ id, data, selected }: NodeProps<Gen
 
       <NodeToolbar id={id} data={data} />
 
-      <ResizeHandles visual={visual} />
+      {/* Not merely disabled: a handle that cannot be dragged is still a handle
+          drawn on the corner of every node, which reads as a canvas that has
+          stopped working rather than one that is being read. */}
+      {readOnly ? null : <ResizeHandles visual={visual} />}
 
       <ReferenceHandles />
     </div>
@@ -959,6 +988,7 @@ function saveAs(href: string) {
  */
 function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
   const { deleteElements } = useReactFlow();
+  const readOnly = useContext(ReadOnlyContext);
 
   const src = assetSrc(data);
 
@@ -1035,29 +1065,35 @@ function NodeToolbar({ id, data }: { id: string; data: GenerationNodeData }) {
         >
           <Icon name="download" className="text-sm" />
         </Button>
-        <Button
-          icon
-          variant="ghost"
-          size="sm"
-          aria-label="Delete"
-          // The one action on this strip that cannot be taken back, and the
-          // only reason it is not black like its neighbour.
-          //
-          // Not the app's own `red-400` though: that is destructive ink for the
-          // dark menus it was picked on, and against this near-white glass it
-          // measures 2.9:1 — a tint, not a warning. `red-600` is the darkest red
-          // the theme exposes and reads at 4.8:1 on the solid white the hover
-          // lifts it to.
-          //
-          // The strip is only three-fifths white, so over dark footage the ink
-          // still has less to work with than black did. What carries the meaning
-          // there is the glyph, which has not changed; the colour is the second
-          // telling, and the confirm dialog is the third.
-          className="text-red-600 hover:bg-white hover:text-red-600"
-          onClick={() => setConfirming(true)}
-        >
-          <Icon name="delete" className="text-sm" />
-        </Button>
+        {/* Absent on a read-only canvas rather than disabled: a greyed-out
+            delete on every node is a row of promises the board will never
+            keep, and the strip is small enough that one button reads as a
+            complete set. Download stays — it is a read. */}
+        {readOnly ? null : (
+          <Button
+            icon
+            variant="ghost"
+            size="sm"
+            aria-label="Delete"
+            // The one action on this strip that cannot be taken back, and the
+            // only reason it is not black like its neighbour.
+            //
+            // Not the app's own `red-400` though: that is destructive ink for the
+            // dark menus it was picked on, and against this near-white glass it
+            // measures 2.9:1 — a tint, not a warning. `red-600` is the darkest red
+            // the theme exposes and reads at 4.8:1 on the solid white the hover
+            // lifts it to.
+            //
+            // The strip is only three-fifths white, so over dark footage the ink
+            // still has less to work with than black did. What carries the meaning
+            // there is the glyph, which has not changed; the colour is the second
+            // telling, and the confirm dialog is the third.
+            className="text-red-600 hover:bg-white hover:text-red-600"
+            onClick={() => setConfirming(true)}
+          >
+            <Icon name="delete" className="text-sm" />
+          </Button>
+        )}
       </div>
 
       {/* Deleting is the one action here with nothing behind it — the canvas
