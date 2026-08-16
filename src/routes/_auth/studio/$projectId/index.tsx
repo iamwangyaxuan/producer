@@ -49,6 +49,9 @@ import { assetContentUrl } from "#/lib/asset-links";
 import { deleteAsset, projectAssetsQueryOptions } from "#/lib/assets";
 import type { AssetSummary } from "#/lib/assets";
 import { presenceColor } from "#/lib/canvas/presence";
+import { walletQueryOptions } from "#/lib/credits";
+import { formatUsd } from "#/lib/money";
+import { quoteGeneration } from "#/lib/pricing";
 import { projectQueryOptions } from "#/lib/projects";
 
 export const Route = createFileRoute("/_auth/studio/$projectId/")({
@@ -121,6 +124,17 @@ function Studio({ projectName }: { projectName: string }) {
    * it already holds — so this is an ordinary query and nothing waits on it.
    */
   const { data: assets } = useQuery(projectAssetsQueryOptions(projectId));
+
+  /**
+   * The wallet every generation on this canvas is paid out of.
+   *
+   * An ordinary query rather than a suspending one: a canvas that will not
+   * paint until the balance arrives is a canvas held up by a number it only
+   * needs at the moment somebody presses send. Until it answers, the composer
+   * quotes nothing and the check below lets the press through to the server,
+   * which is the authority anyway.
+   */
+  const { data: wallet } = useQuery(walletQueryOptions(session.session.activeOrganizationId));
 
   const { screenToFlowPosition, deleteElements: deleteNodes } = useReactFlow<GenerationNode>();
 
@@ -223,7 +237,45 @@ function Studio({ projectName }: { projectName: string }) {
       .map((node) => node.id);
   }
 
+  /**
+   * What this press would cost, and whether the wallet covers it.
+   *
+   * Asked here rather than left to the server, for the reason the members page
+   * puts the seat count next to the invite button: the authoritative check is
+   * a long way from the button, and "nothing appeared to happen" is the worst
+   * possible way to learn you are out of credit. The server still refuses —
+   * this query can be stale, and a second tab can spend the same balance — but
+   * by then it is the exception rather than the normal path.
+   */
+  function affordable(submission: ComposerSubmission) {
+    const quote = quoteGeneration(
+      {
+        model: submission.model,
+        resolution: submission.resolution,
+        duration: submission.duration,
+        prompt: submission.text
+      },
+      wallet?.billingEnabled ?? false
+    );
+
+    if (!quote.billable || (wallet?.balance ?? 0) >= quote.total) return true;
+
+    toast.add({
+      type: "error",
+      title: "Not enough credits",
+      description: `This generation costs ${formatUsd(quote.total)}. Add credit from the Credits page to carry on.`
+    });
+
+    return false;
+  }
+
+  /**
+   * Answers whether the press was taken. `false` leaves the composer's draft
+   * alone — a refusal should not also cost somebody the prompt they wrote.
+   */
   function generate(submission: ComposerSubmission) {
+    if (!affordable(submission)) return false;
+
     const centre = viewportCentre();
 
     const id = collab.addGeneration(
@@ -240,6 +292,8 @@ function Studio({ projectName }: { projectName: string }) {
     );
 
     if (id) void generations.start(id, projectId, submission, collab.patchNodeData);
+
+    return true;
   }
 
   /**
@@ -643,7 +697,8 @@ function Studio({ projectName }: { projectName: string }) {
                   ref={composer}
                   className="pointer-events-auto mx-auto w-full max-w-2xl"
                   assets={attachableAssets}
-                  onSubmit={(submission) => void generate(submission)}
+                  onSubmit={generate}
+                  billingEnabled={wallet?.billingEnabled ?? false}
                 />
               </div>
             </Panel>
