@@ -22,6 +22,7 @@ import { Route as AuthAcceptInvitationInvitationIdRouteImport } from './routes/_
 import { Route as AuthStudioProjectIdRouteRouteImport } from './routes/_auth/studio/$projectId/route'
 import { Route as ApiAssetsIndexRouteImport } from './routes/api/assets/index'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as AuthDashboardAccountIndexRouteImport } from './routes/_auth/_dashboard/account/index'
 import { Route as AuthDashboardBillingIndexRouteImport } from './routes/_auth/_dashboard/billing/index'
 import { Route as AuthDashboardOrganizationMembersRouteImport } from './routes/_auth/_dashboard/organization/members'
 import { Route as AuthDashboardProjectsIndexRouteImport } from './routes/_auth/_dashboard/projects/index'
@@ -98,6 +99,12 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthDashboardAccountIndexRoute =
+  AuthDashboardAccountIndexRouteImport.update({
+    id: '/account/',
+    path: '/account/',
+    getParentRoute: () => AuthDashboardRouteRoute,
+  } as any)
 const AuthDashboardBillingIndexRoute =
   AuthDashboardBillingIndexRouteImport.update({
     id: '/billing/',
@@ -176,6 +183,7 @@ export interface FileRoutesByFullPath {
   '/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
   '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
+  '/account/': typeof AuthDashboardAccountIndexRoute
   '/billing/': typeof AuthDashboardBillingIndexRoute
   '/projects/': typeof AuthDashboardProjectsIndexRoute
   '/studio/$projectId/': typeof AuthStudioProjectIdIndexRoute
@@ -198,6 +206,7 @@ export interface FileRoutesByTo {
   '/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
   '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
+  '/account': typeof AuthDashboardAccountIndexRoute
   '/billing': typeof AuthDashboardBillingIndexRoute
   '/projects': typeof AuthDashboardProjectsIndexRoute
   '/studio/$projectId': typeof AuthStudioProjectIdIndexRoute
@@ -224,6 +233,7 @@ export interface FileRoutesById {
   '/_auth/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
   '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
+  '/_auth/_dashboard/account/': typeof AuthDashboardAccountIndexRoute
   '/_auth/_dashboard/billing/': typeof AuthDashboardBillingIndexRoute
   '/_auth/_dashboard/projects/': typeof AuthDashboardProjectsIndexRoute
   '/_auth/studio/$projectId/': typeof AuthStudioProjectIdIndexRoute
@@ -249,6 +259,7 @@ export interface FileRouteTypes {
     | '/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
     | '/api/assets/$assetId/content'
+    | '/account/'
     | '/billing/'
     | '/projects/'
     | '/studio/$projectId/'
@@ -271,6 +282,7 @@ export interface FileRouteTypes {
     | '/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
     | '/api/assets/$assetId/content'
+    | '/account'
     | '/billing'
     | '/projects'
     | '/studio/$projectId'
@@ -296,6 +308,7 @@ export interface FileRouteTypes {
     | '/_auth/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
     | '/api/assets/$assetId/content'
+    | '/_auth/_dashboard/account/'
     | '/_auth/_dashboard/billing/'
     | '/_auth/_dashboard/projects/'
     | '/_auth/studio/$projectId/'
@@ -410,6 +423,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_auth/_dashboard/account/': {
+      id: '/_auth/_dashboard/account/'
+      path: '/account'
+      fullPath: '/account/'
+      preLoaderRoute: typeof AuthDashboardAccountIndexRouteImport
+      parentRoute: typeof AuthDashboardRouteRoute
+    }
     '/_auth/_dashboard/billing/': {
       id: '/_auth/_dashboard/billing/'
       path: '/billing'
@@ -486,6 +506,7 @@ declare module '@tanstack/react-router' {
 interface AuthDashboardRouteRouteChildren {
   AuthDashboardOrganizationMembersRoute: typeof AuthDashboardOrganizationMembersRoute
   AuthDashboardProjectsArchiveRoute: typeof AuthDashboardProjectsArchiveRoute
+  AuthDashboardAccountIndexRoute: typeof AuthDashboardAccountIndexRoute
   AuthDashboardBillingIndexRoute: typeof AuthDashboardBillingIndexRoute
   AuthDashboardProjectsIndexRoute: typeof AuthDashboardProjectsIndexRoute
 }
@@ -493,6 +514,7 @@ interface AuthDashboardRouteRouteChildren {
 const AuthDashboardRouteRouteChildren: AuthDashboardRouteRouteChildren = {
   AuthDashboardOrganizationMembersRoute: AuthDashboardOrganizationMembersRoute,
   AuthDashboardProjectsArchiveRoute: AuthDashboardProjectsArchiveRoute,
+  AuthDashboardAccountIndexRoute: AuthDashboardAccountIndexRoute,
   AuthDashboardBillingIndexRoute: AuthDashboardBillingIndexRoute,
   AuthDashboardProjectsIndexRoute: AuthDashboardProjectsIndexRoute,
 }

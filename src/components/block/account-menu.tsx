@@ -1,3 +1,5 @@
+import { Link } from "@tanstack/react-router";
+
 import Avatar from "#/components/ui/avatar";
 import Button from "#/components/ui/button";
 import Icon from "#/components/ui/icon";
@@ -71,6 +73,14 @@ export default function AccountMenu({ user }: AccountMenuProps) {
               because an address that has been cut short cannot be checked —
               which is the only reason it is here. */}
           <Menu.GroupLabel className="max-w-64 break-all">{user.email}</Menu.GroupLabel>
+          {/* The menu already names the account; this is the way into the page
+              that can change it. A `LinkItem` rather than an `Item` with an
+              onClick, so it is a real anchor — middle-click and "open in new
+              tab" work, and it is announced as a link. */}
+          <Menu.LinkItem render={<Link to="/account" />}>
+            <Icon name="person" className="text-sm" />
+            Profile
+          </Menu.LinkItem>
           {/*
            * `closeOnClick={false}` so the row survives its own click: the request
            * takes a moment, and this is where both the pending state and a

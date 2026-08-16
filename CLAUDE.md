@@ -220,6 +220,12 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 
 - 路径别名 `#/*` 与 `@/*` 都指向 `src/`，代码里统一用 `#/`。
 - 路由在 `src/routes/`：`_auth` 做会话守卫并把 session 放进 route context；`_auth/studio/$projectId/route.tsx` 这层负责 loader 与文档标题，子路由从 query 缓存读。API 路由用 `createFileRoute(...).server.handlers`。
+- **仪表盘的页面外壳只有一份**（`components/block/dashboard-page.tsx`）：内边距、居中的那一列、标题/描述/主操作的那一行，以及错误面板。此前三个页面各抄了一遍同样的 `px-4 py-8 sm:px-6 lg:px-10` 和 `text-2xl font-semibold`，而且已经在唯一真正该有差别的地方各走各的了。`width` 是刻意留在外面的那个参数，因为它是每个页面的真实决定而不是意外：项目网格要尽可能多的列（`wide`），账单的两栏卡片超过一定宽度就难读（`regular`），而一行行的名单在眼睛要从最左的名字跑到最右的控件时就跟不上了（`narrow`）。新页面照着用，别再抄一套常量。
+- **仪表盘外壳恰好一屏高、自己不滚**（`_dashboard/route.tsx`）：`h-dvh overflow-hidden` 的 main，右侧内容列 `overflow-y-auto` 自己滚。让文档当滚动容器的话，一长条项目网格会把侧栏一起卷出视野——切换器、导航、账号菜单全在人滚得够远、最想用它们的那一刻离开屏幕。`h-dvh` 而非 `h-screen`：移动端 `100vh` 是地址栏收起时的高度，用它外壳会比可视区高出一截，侧栏底部压在地址栏底下。内容列必须写 `data-scroll-restoration-id`——路由免费恢复的是 window 的偏移，自定义滚动容器不报上名字，每次后退都回到列表顶部。
+- **`_auth` 下但不在 `_dashboard` 下的页面是刻意的**：两个结账页（席位 `/billing/checkout/$sessionId`、充值 `/billing/topup/$sessionId`）和接受邀请（`/accept-invitation/$id`）都不该有侧栏。前两个是只能付款或走开的地方，后一个是在决定要不要加入**另一个**组织——把你已经在的工作区摆在旁边只会碍事。两个结账页是同构的兄弟：真配了 key 谁也走不到，Stripe 自己托管，它们是换真账号时**删掉**而不是改配置的那部分。
+- **`/account` 是唯一不按组织取范围的仪表盘页面**（`components/block/profile-page.tsx`）。名字、密码、登录设备跟你当前看的是哪个工作区无关，所以它的 query 不带组织 id，切组织也不需要重新解析。它和成员/额度分开放，是为了不让它长成一个什么都往里塞的设置抽屉。
+- **改名后必须 `setQueryData` 而不是 invalidate**：`_auth` 守卫通过 `ensureQueryData` 读 session，而那个方法**不管新旧、缓存里有什么就给什么**——所以只把条目标记为过期再 `router.invalidate()`，会把旧名字原样读回屏幕上（侧栏账号菜单就是这么暴露出来的）。也不能像 `useSignOut` 那样直接 remove：守卫紧接着就要读它，读到空就是一次跳回登录页。名字是我们手里已经有的值，直接写进缓存既确定又省一次往返。
+- **`setPassword` 走 server fn 而不是 authClient**：better-auth 故意不把它暴露给浏览器——它是唯一不需要旧密码的密码写入。这边保住同一个性质的办法是，handler 先查 `account` 里有没有 `credential` 行，有就拒绝；于是已经有密码的账号永远走不到它，只能走 `changePassword` 并证明旧密码。这也是 OTP／魔法链接／Google 建出来的账号第一次拿到密码的唯一途径。
 - **项目有两个列表，是同一次读把 `archived` 翻过来**（`components/block/projects-page.tsx` 一个组件，`projects/index.tsx` 与 `projects/archive.tsx` 两层薄壳）。做成两个路由而不是 `?archived=1`：它是个"去处"，侧栏要链接它、浏览器要能后退到它、地址要能收藏。两个视图的差异全部集中在文件顶部的 `COPY` 里，好让差异读起来是一张清单而不是两个文件的 diff。
 - **归档项目可以打开，但是只读的**（`components/block/studio/archived-canvas.tsx`）。做法不是给实时画布加一个 `readOnly` 开关,而是**换一棵树**:编辑器那八百行里全是会写的东西——提示框、上传、拖放、两个右键菜单、删除对话框、吸附层、在场、协同 socket——用一个标志穿过去,意味着它们全都留在屏幕上戴着 `disabled`,并且下一个被加进来的编辑入口默认是开着的。这里它们不是被禁用,是不存在。
 - **真正让它只读的是没有 socket**:`canAccessProjectCanvas` 依旧拒绝归档项目,所以那个持有可写文档的 Durable Object 从这个页面根本够不着;画布是从 `canvas_snapshot` 里那份房间最后保存的快照重建的(`lib/canvas-snapshot.ts`)。一个"只读模式的协同画布"只能在浏览器里强制,那不算强制。
@@ -230,13 +236,14 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 - **归档画布的快照必须在 loader 里预取**:它走 `useSuspenseQuery`,而 loader 从没碰过的 key 在首次渲染时缓存里什么都没有——症状是工具栏正常、画布一个节点都没有。跟这个仓库其它页面同一条约定。
 - 因此归档卡片的标题**又是链接了**:有地方可去了,而"看看当年做了什么"正是留着归档的全部理由。
 - **归档现在可以恢复**，所以归档确认框不再说"拿不回来"。归档卡片没有加灰度或角标——那一页每张卡都是归档的，人人都有的标记什么也没区分出来。恢复是唯一没有确认框的动作（它不损失任何东西），因此也是唯一把失败报给 toast 的——菜单点完就关，卡片成功后就从这一页消失，屏幕上没有别的地方能放这条错误。
+- **侧栏导航**（`components/block/dashboard-nav.tsx`）复用切换器那次查询：`fetchMyOrganizations` 顺带把 `type` 和 `role` 带出来，`canManageMembers` 据此决定"Organization → Members"这一组**是否存在**（而不是灰掉——对 private 工作区来说那是一个永远不会兑现的承诺）。"Account → Credits"（`/billing`）相反是**无条件**的，尽管钱包本身是组织范围的：任何成员都要能看到余额——那是每一次"余额不足"背后的数——只是充值和流水只对 owner/admin 出现。它也是人**因为被拒绝**才会来的那一页，值得从任何地方都能点到。`md` 以下整条侧栏收成一列图标，分组标题整个消失。`/projects` 的 `Link` 必须写 `activeOptions={{ exact: true }}`，否则 `/projects/archive` 会把它一起点亮。
 - `components/ui/` 是 Base UI + `tailwind-variants` 的薄封装（暗色主题，样式挂 `data-*` 而非伪类）；`components/block/` 是业务块，画布相关全在 `components/block/studio/`。
 - 第三方 CSS 用 `@import ... layer(base)` 引入（React Flow、video.js 的样式表无 layer，否则会盖过 utility）。**组件里不要再 import 一次**：`generation-node.tsx` 只动态 `import("video.js")` 取播放器，样式表由 `styles.css` 一处引入——第二次无 layer 的 import 会盖掉那里的 `.canvas-video` 覆写，安静地把原皮肤装回来。
 - `/menu-preview` 是 `components/ui/menu` 的沙盒页，不在 `_auth` 下，也不是产品里的页面——改菜单组件时拿它对照，别当成有人在用的路由去维护。
 - AI 输入框是 **tiptap 编辑器**，不是 textarea（`ai-composer.tsx` + `use-asset-mentions.ts` + `asset-mention.tsx`）。理由是 `@` 提及必须是**原子节点**：在 textarea 里它只能是一串代表 id 的字符，任何一次退格或粘贴都会让标签和真正要发送的 id 悄悄对不上。`renderText` 决定它在 `getText()` 里长什么样（`@标签`，`@` 只在这里保留——它标出哪些词指向附件），提交时的 id 则从 doc 里遍历节点取。编辑器只创建一次，变动的东西（资产列表、模型能力、Enter 的行为）一律经 ref 读取。
 - 提及在编辑器里是**纯文本加一个颜色**，没有色块、圆角、图标，视觉上也不显示 `@`。这不只是审美：给它做成 chip 会让 inline-flex 的基线取自图标而非文字，整块比同行文字高出一截——纯 inline 文本没有这个问题。项目主体是灰阶（`#000`/`#fff` + neutral + 危险红），蓝色专门留给"这里正在发生交互"——吸附参考线、trim 手柄、焦点环一律 `blue-500`，所以提及这支更浅的 `#8ab4f8` 是正文里唯一带色相的东西。
 - `@` 候选**只列画布上的文件**（`attachableAssets`），不是项目里的全部资产：删掉节点后资产行还在，列全量会冒出画布上根本不存在的东西，同一文件被两个节点用还会重复。再按 `modelAccepts(model)` 过滤——给 TTS 模型附图片没有意义。
-- 文案走 Paraglide：`messages/*.json` → 生成 `src/paraglide/`，策略 `["url", "baseLocale"]`。
+- 文案走 Paraglide：`messages/*.json` → 生成 `src/paraglide/`，策略 `["url", "baseLocale"]`。**注意现状**：管道装好了但一条产品文案都没接，`messages/*.json` 里还是脚手架那 6 条示例，界面文字全是硬编码英文。新页面照现状写英文字面量，别只把自己那一页接上 i18n。
 
 ## 本地开发的已知坑
 
