@@ -9,13 +9,21 @@ import { ASSET_KINDS } from "#/db/schema";
 import type { GenerationParams } from "#/db/schema";
 import { ALLOWED_MIME, normalizeMime } from "#/lib/asset-constraints";
 import { canonicalId } from "#/lib/ids";
+import { findModel } from "#/lib/models";
+import { INSUFFICIENT_CREDITS_MESSAGE, quoteGeneration } from "#/lib/pricing";
+import type { GenerationQuote } from "#/lib/pricing";
 import { withRetry } from "#/lib/retry";
 import { requireAssetAccess } from "#/server/asset-access";
 import { assetDownloadUrl } from "#/server/asset-url";
+import { debit, InsufficientCredits, readBalance, refundCharge } from "#/server/billing/credits";
+import type { LedgerEntry } from "#/server/billing/credits";
 import { getProjectAccess } from "#/server/canvas-access";
+import { resolveGateway } from "#/server/generation/gateway";
+import type { ResolvedGateway } from "#/server/generation/gateway";
+import { meterInBackground, recordUsageEvent } from "#/server/generation/metering";
 import { getProvider } from "#/server/generation/provider";
 import type { GenerationReference, GenerationResult } from "#/server/generation/provider";
-import { generateAssetTitle } from "#/server/generation/title";
+import { generateAssetTitle, TITLE_MODEL } from "#/server/generation/title";
 
 /**
  * Generation in two calls, so the record exists before the work does.
@@ -39,6 +47,62 @@ import { generateAssetTitle } from "#/server/generation/title";
  * client hands it is an SSRF waiting to happen. The stub lives behind the
  * same server-side seam a real provider will occupy.
  */
+
+/**
+ * What this request will cost, decided from the server's own facts.
+ *
+ * The client quotes the same request with the same function to put a price on
+ * the send button, but never sends the answer: a price arriving in a request
+ * body is a price the caller chose. Both sides read `models.ts`, and the one
+ * part the browser cannot work out — whether this generation is billed at all —
+ * travels on the wallet query instead.
+ *
+ * "Billed at all" is exactly `source === "system"`. An organization running on
+ * its own Gateway key has already been charged by Vercel for the call, so
+ * charging its wallet as well would be charging twice for one generation; an
+ * organization with no gateway of any kind gets a stand-in file, which is not
+ * something to charge for either. Both collapse to a zero quote, and the wallet
+ * is never touched for a zero.
+ */
+function quoteFor(
+  request: {
+    model?: string | null;
+    prompt?: string | null;
+    params?: GenerationParams | null;
+  },
+  resolved: ResolvedGateway | null
+): GenerationQuote {
+  return quoteGeneration(
+    {
+      model: request.model ?? "",
+      resolution: request.params?.resolution,
+      aspectRatio: request.params?.aspectRatio,
+      duration: request.params?.duration,
+      prompt: request.prompt ?? ""
+    },
+    resolved?.source === "system"
+  );
+}
+
+/**
+ * Refuses a generation nobody can pay for, before there is anything to show for
+ * it.
+ *
+ * Advisory, and deliberately early rather than authoritative: the real debit
+ * happens in `runGeneration`, under a conditional update that two concurrent
+ * generations cannot both win. What this buys is the ordinary case — the caller
+ * finds out at the moment it presses the button, instead of watching a node
+ * appear on everyone's canvas and then turn grey.
+ */
+async function assertAffordable(organizationId: string, quote: GenerationQuote) {
+  if (!quote.billable) return;
+
+  const { balance } = await readBalance(organizationId);
+
+  if (balance >= quote.total) return;
+
+  throw new Error(INSUFFICIENT_CREDITS_MESSAGE);
+}
 
 const startInput = z.object({
   projectId: canonicalId,
@@ -91,6 +155,20 @@ export const startGeneration = createServerFn({ method: "POST" })
     if (data.resolution !== undefined) params.resolution = data.resolution;
     if (data.aspectRatio !== undefined) params.aspectRatio = data.aspectRatio;
     if (data.duration !== undefined) params.duration = data.duration;
+
+    // Before the row, so a generation nobody can pay for leaves nothing behind
+    // to sweep up — and against the *organization's* wallet, because a
+    // generation is work done inside a tenant and the bill belongs where its
+    // project, canvas and assets already do. `access.organizationId` is both
+    // the organization the session is scoped to and the one this project lives
+    // in; `getProjectAccess` only answers when those two agree.
+    await assertAffordable(
+      access.organizationId,
+      quoteFor(
+        { model: data.model, prompt: data.prompt, params },
+        await resolveGateway(access.organizationId)
+      )
+    );
 
     // The object key embeds the asset id and is NOT NULL from the first
     // insert, so the id is fetched ahead of the row — see `newRowId`.
@@ -226,6 +304,28 @@ async function putGeneratedBytes(objectKey: string, result: GenerationResult, co
   );
 }
 
+/**
+ * Marks a generation failed, without letting that write become the failure.
+ *
+ * Guarded on pending-and-undeleted for the same reason the bind is: a row
+ * deleted while the model worked is not this call's to rewrite. If even this is
+ * lost the row stays pending, and the stale-pending sweep resolves it after the
+ * grace period.
+ */
+async function failAsset(db: ReturnType<typeof getDB>, assetId: string, reason: string) {
+  await db
+    .update(schema.asset)
+    .set({ status: "failed", error: reason })
+    .where(
+      and(
+        eq(schema.asset.id, assetId),
+        eq(schema.asset.status, "pending"),
+        isNull(schema.asset.deletedAt)
+      )
+    )
+    .catch(() => {});
+}
+
 const runInput = z.object({ assetId: canonicalId });
 
 export const runGeneration = createServerFn({ method: "POST" })
@@ -273,7 +373,77 @@ export const runGeneration = createServerFn({ method: "POST" })
         throw new Error("That asset is not waiting to be generated.");
       }
 
+      /**
+       * The money, taken between the claim and the first byte leaving this
+       * Worker.
+       *
+       * After the claim, so only the run that won it can charge — otherwise two
+       * clients racing the same row would both debit and only one would produce
+       * a file. Before the provider, because a wallet that is checked after the
+       * work is not a limit: a caller with one yuan could fire fifty
+       * generations, each of which would find a positive balance on the way in
+       * and a bill on the way out.
+       *
+       * `referenceId` is the asset id, and the ledger's unique index over
+       * (kind, reference) is what makes that true forever — a replayed call
+       * cannot charge this asset twice. A retry is charged again because
+       * `retryGeneration` creates a *new* row with a new id, which is exactly
+       * right: it is a second generation.
+       */
+      // Resolved once, here, and handed to everything below: the media call,
+      // the naming call and the price all have to agree about whose key this
+      // generation is going out on.
+      const resolved = await resolveGateway(asset.organizationId);
+      const quote = quoteFor(asset, resolved);
+      let charge: LedgerEntry | null = null;
+
+      if (quote.billable) {
+        try {
+          charge = await debit({
+            organizationId: asset.organizationId,
+            // Recorded so the organization's statement can say who spent it.
+            // Attribution, never authorization — what may be spent was settled
+            // by the organization id above.
+            userId,
+            kind: "usage",
+            amount: quote.total,
+            referenceId: asset.id,
+            description: `${asset.kind} · ${findModel(asset.model ?? "")?.name ?? asset.model}`,
+            metadata: {
+              model: asset.model,
+              modality: asset.kind,
+              unit: quote.unit,
+              quantity: quote.quantity,
+              modelShare: quote.model,
+              namingFee: quote.naming
+            }
+          });
+        } catch (error) {
+          if (!(error instanceof InsufficientCredits)) throw error;
+
+          await failAsset(db, asset.id, INSUFFICIENT_CREDITS_MESSAGE);
+
+          throw new Error(INSUFFICIENT_CREDITS_MESSAGE);
+        }
+      }
+
+      /** Where every meter row for this generation gets its common fields. */
+      const meterContext = {
+        organizationId: asset.organizationId,
+        userId,
+        projectId: asset.projectId,
+        assetId: asset.id,
+        transactionId: charge?.transactionId ?? null,
+        // Recorded even when nothing was charged, which is the whole point:
+        // an organization on its own key still wants to know what it ran.
+        keySource: resolved?.source ?? "system"
+      };
+
+      // Declared out here so the failure path can still meter the naming call
+      // without waiting for it — see the catch.
+      let naming: ReturnType<typeof generateAssetTitle> | null = null;
       let stored;
+
       try {
         // After the claim, so a run that lost the race never mints links to the
         // winner's inputs, and as late as possible before the provider call, so
@@ -283,11 +453,11 @@ export const runGeneration = createServerFn({ method: "POST" })
 
         // Named in parallel with the work, not after it: the provider is the
         // slow half, so naming costs nothing as long as it runs alongside. It
-        // resolves to null rather than throwing, so a failed naming call cannot
-        // take the generation down with it.
-        const naming = generateAssetTitle(asset.prompt ?? "");
+        // resolves rather than throwing, so a failed naming call cannot take
+        // the generation down with it.
+        naming = generateAssetTitle(asset.prompt ?? "", resolved?.gateway ?? null);
 
-        const result = await getProvider(asset.model ?? "").run(
+        const result = await getProvider(asset.model ?? "", resolved).run(
           {
             modality: asset.kind,
             prompt: asset.prompt ?? "",
@@ -314,31 +484,109 @@ export const runGeneration = createServerFn({ method: "POST" })
           throw new Error(`Provider answered with an unsupported ${asset.kind} type.`);
         }
 
-        stored = {
-          object: await putGeneratedBytes(asset.objectKey, result, contentType),
-          contentType,
-          title: await naming
-        };
+        const object = await putGeneratedBytes(asset.objectKey, result, contentType);
+        const named = await naming;
+
+        // Metered here rather than the moment each call returned, because what
+        // goes in `chargedAmount` is what the wallet *keeps* — and until the
+        // bytes are safely in R2 this generation could still fail and be
+        // refunded. Recording the split only on the path where the charge
+        // survives is what makes `sum(chargedAmount)` over an asset's events
+        // equal the ledger entry that paid for it.
+        await recordUsageEvent({
+          ...meterContext,
+          purpose: "generation",
+          modality: asset.kind,
+          model: asset.model ?? "",
+          status: "succeeded",
+          unit: quote.unit,
+          quantity: quote.quantity,
+          chargedAmount: quote.model,
+          call: result.call
+        });
+
+        if (named.call) {
+          await recordUsageEvent({
+            ...meterContext,
+            purpose: "title",
+            model: TITLE_MODEL,
+            status: named.error ? "failed" : "succeeded",
+            error: named.error,
+            chargedAmount: quote.naming,
+            call: named.call
+          });
+        }
+
+        stored = { object, contentType, title: named.title };
       } catch (error) {
+        const reason = error instanceof Error ? error.message : "Generation failed.";
+
         // Best effort, and guarded like the bind below: a row deleted while
         // the model worked is not this call's to rewrite. If even this is
         // lost, the row stays pending and the stale-pending sweep resolves it.
-        await db
-          .update(schema.asset)
-          .set({
-            status: "failed",
-            error: error instanceof Error ? error.message : "Generation failed."
-          })
-          .where(
-            and(
-              eq(schema.asset.id, asset.id),
-              eq(schema.asset.status, "pending"),
-              isNull(schema.asset.deletedAt)
-            )
-          )
-          .catch(() => {});
+        await failAsset(db, asset.id, reason);
 
-        throw new Error("Generation failed.");
+        // Nothing was produced, so nothing is owed. Idempotent by the same
+        // unique index the charge uses, and it reads the amount off the charge
+        // rather than re-quoting — a refund that does not match its own charge
+        // would silently mint or destroy credit.
+        if (charge) {
+          await refundCharge(
+            asset.organizationId,
+            asset.id,
+            "Refund · generation failed",
+            userId
+          ).catch((refundError: unknown) => {
+            // Loud, because this is the one failure here that costs somebody
+            // money: the generation is already marked failed, so nothing
+            // downstream will try again.
+            console.error(`failed to refund generation ${asset.id}`, refundError);
+          });
+        }
+
+        // Charged nothing in the end, so the meter says so — the calls still
+        // happened and still cost us, which is the difference this table is
+        // here to show.
+        await recordUsageEvent({
+          ...meterContext,
+          purpose: "generation",
+          modality: asset.kind,
+          model: asset.model ?? "",
+          status: "failed",
+          error: reason,
+          unit: quote.unit,
+          quantity: quote.quantity,
+          chargedAmount: 0
+        });
+
+        // Not awaited — naming has a 20 second patience of its own, and a
+        // generation that has already failed should not be held open for it —
+        // but handed to `waitUntil` rather than merely started, because an
+        // isolate that has answered is free to stop running and the row would
+        // land only sometimes.
+        if (naming) {
+          meterInBackground(
+            naming.then((named) => {
+              if (!named.call) return;
+
+              return recordUsageEvent({
+                ...meterContext,
+                purpose: "title",
+                model: TITLE_MODEL,
+                status: named.error ? "failed" : "succeeded",
+                error: named.error,
+                chargedAmount: 0,
+                call: named.call
+              });
+            })
+          );
+        }
+
+        // The one reason worth repeating to the caller: it is the only failure
+        // here that the person can do something about, and the canvas has no
+        // other channel for a message. Everything else stays generic, and the
+        // real reason is on the row.
+        throw new Error(reason === INSUFFICIENT_CREDITS_MESSAGE ? reason : "Generation failed.");
       }
 
       // The bind: bytes become the record's only if the record is still the one
@@ -371,6 +619,11 @@ export const runGeneration = createServerFn({ method: "POST" })
         // still reachable from the row's own `objectKey`, which the tombstone
         // sweep collects. Deleting it here would still be a live race against
         // `deleteAsset`'s own R2 delete, for no storage the sweep won't get.
+        //
+        // The charge stands, and not by oversight: the model ran, the vendor
+        // billed us, and the only way to get here is somebody deleting their
+        // own node while it was working. Refunding that would make "delete the
+        // node the instant it finishes" a way to generate for free.
         throw new Error("That asset no longer exists.");
       }
 
@@ -460,6 +713,16 @@ export const retryGeneration = createServerFn({ method: "POST" })
     if (references.some((row) => row.stillUsable === null)) {
       throw new Error("A referenced asset no longer exists.");
     }
+
+    // A retry is a second generation and is charged like one — the failed
+    // attempt was refunded, and this one gets its own row, its own id and its
+    // own debit. Checked here so an empty wallet is told before the old node is
+    // tombstoned, which would otherwise trade a failed generation the person
+    // can still see for one they cannot.
+    await assertAffordable(
+      asset.organizationId,
+      quoteFor(asset, await resolveGateway(asset.organizationId))
+    );
 
     const assetId = await newRowId(db);
     const objectKey = `${asset.organizationId}/${asset.projectId}/${assetId}`;

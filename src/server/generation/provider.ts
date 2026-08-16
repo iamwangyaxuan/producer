@@ -1,7 +1,8 @@
 import type { AssetKind } from "#/db/schema";
 import { findModel } from "#/lib/models";
-import { getGateway } from "#/server/generation/gateway";
+import type { ResolvedGateway } from "#/server/generation/gateway";
 import { gatewayProvider } from "#/server/generation/gateway-provider";
+import type { GatewayCall } from "#/server/generation/metering";
 import { sampleProvider } from "#/server/generation/sample-provider";
 
 /**
@@ -49,6 +50,16 @@ export interface GenerationResult {
   contentType: string;
   /** Required when body is a stream — R2 needs a known length to accept one. */
   contentLength?: number;
+  /**
+   * What the call to the Gateway was, for the meter. Absent from the sample
+   * provider, which does not make one.
+   *
+   * Carried back on the result rather than written from inside the provider,
+   * because the provider is the one part of this pipeline that touches no
+   * database — keeping it a pure request-to-bytes function is what lets a new
+   * backend be written without knowing that billing exists.
+   */
+  call?: GatewayCall;
 }
 
 export interface GenerationProvider {
@@ -63,8 +74,14 @@ const GATEWAY_MODALITIES: ReadonlySet<AssetKind> = new Set<AssetKind>(["image", 
 
 /**
  * Which backend answers for a model, decided by three questions in order:
- * is there a key, does the catalogue know this model, and does the Gateway
- * serve it.
+ * is there a gateway to call, does the catalogue know this model, and does the
+ * Gateway serve it.
+ *
+ * The gateway is passed in rather than looked up, because *which* one is now an
+ * organization-level fact — its own key or the system's — and resolving it
+ * costs a database read. The caller does that once per generation and hands the
+ * answer to everything downstream, so a single generation cannot end up making
+ * its media call on one key and its naming call on another.
  *
  * Any "no" lands on the sample provider, and that is a feature rather than a
  * consolation. A fresh checkout with no key still has a canvas that fills with
@@ -73,12 +90,12 @@ const GATEWAY_MODALITIES: ReadonlySet<AssetKind> = new Set<AssetKind>(["image", 
  * stand-in file is not obviously a stand-in, which is why the catalogue says
  * outright which entries are real.
  */
-export function getProvider(model: string): GenerationProvider {
+export function getProvider(model: string, resolved: ResolvedGateway | null): GenerationProvider {
   const entry = findModel(model);
 
-  if (!entry?.gateway || !GATEWAY_MODALITIES.has(entry.modality) || !getGateway()) {
+  if (!resolved || !entry?.gateway || !GATEWAY_MODALITIES.has(entry.modality)) {
     return sampleProvider;
   }
 
-  return gatewayProvider(entry);
+  return gatewayProvider(entry, resolved.gateway);
 }

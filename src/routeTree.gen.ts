@@ -21,8 +21,10 @@ import { Route as SignupIndexRouteImport } from './routes/signup/index'
 import { Route as AuthStudioProjectIdRouteRouteImport } from './routes/_auth/studio/$projectId/route'
 import { Route as ApiAssetsIndexRouteImport } from './routes/api/assets/index'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+import { Route as AuthDashboardBillingIndexRouteImport } from './routes/_auth/_dashboard/billing/index'
 import { Route as AuthDashboardProjectsIndexRouteImport } from './routes/_auth/_dashboard/projects/index'
 import { Route as AuthBillingCheckoutSessionIdRouteImport } from './routes/_auth/billing/checkout.$sessionId'
+import { Route as AuthBillingTopupSessionIdRouteImport } from './routes/_auth/billing/topup.$sessionId'
 import { Route as AuthStudioProjectIdIndexRouteImport } from './routes/_auth/studio/$projectId/index'
 import { Route as ApiAssetsAssetIdCompleteRouteImport } from './routes/api/assets/$assetId/complete'
 import { Route as ApiAssetsAssetIdContentRouteImport } from './routes/api/assets/$assetId/content'
@@ -87,6 +89,12 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthDashboardBillingIndexRoute =
+  AuthDashboardBillingIndexRouteImport.update({
+    id: '/billing/',
+    path: '/billing/',
+    getParentRoute: () => AuthDashboardRouteRoute,
+  } as any)
 const AuthDashboardProjectsIndexRoute =
   AuthDashboardProjectsIndexRouteImport.update({
     id: '/projects/',
@@ -97,6 +105,12 @@ const AuthBillingCheckoutSessionIdRoute =
   AuthBillingCheckoutSessionIdRouteImport.update({
     id: '/billing/checkout/$sessionId',
     path: '/billing/checkout/$sessionId',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
+const AuthBillingTopupSessionIdRoute =
+  AuthBillingTopupSessionIdRouteImport.update({
+    id: '/billing/topup/$sessionId',
+    path: '/billing/topup/$sessionId',
     getParentRoute: () => AuthRouteRoute,
   } as any)
 const AuthStudioProjectIdIndexRoute =
@@ -135,8 +149,10 @@ export interface FileRoutesByFullPath {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
   '/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
+  '/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
   '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
+  '/billing/': typeof AuthDashboardBillingIndexRoute
   '/projects/': typeof AuthDashboardProjectsIndexRoute
   '/studio/$projectId/': typeof AuthStudioProjectIdIndexRoute
   '/api/assets/$assetId/content/$filename': typeof ApiAssetsAssetIdContentFilenameRoute
@@ -152,8 +168,10 @@ export interface FileRoutesByTo {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets': typeof ApiAssetsIndexRoute
   '/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
+  '/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
   '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
+  '/billing': typeof AuthDashboardBillingIndexRoute
   '/projects': typeof AuthDashboardProjectsIndexRoute
   '/studio/$projectId': typeof AuthStudioProjectIdIndexRoute
   '/api/assets/$assetId/content/$filename': typeof ApiAssetsAssetIdContentFilenameRoute
@@ -173,8 +191,10 @@ export interface FileRoutesById {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
   '/_auth/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
+  '/_auth/billing/topup/$sessionId': typeof AuthBillingTopupSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
   '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
+  '/_auth/_dashboard/billing/': typeof AuthDashboardBillingIndexRoute
   '/_auth/_dashboard/projects/': typeof AuthDashboardProjectsIndexRoute
   '/_auth/studio/$projectId/': typeof AuthStudioProjectIdIndexRoute
   '/api/assets/$assetId/content/$filename': typeof ApiAssetsAssetIdContentFilenameRoute
@@ -193,8 +213,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/assets/'
     | '/billing/checkout/$sessionId'
+    | '/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
     | '/api/assets/$assetId/content'
+    | '/billing/'
     | '/projects/'
     | '/studio/$projectId/'
     | '/api/assets/$assetId/content/$filename'
@@ -210,8 +232,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/assets'
     | '/billing/checkout/$sessionId'
+    | '/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
     | '/api/assets/$assetId/content'
+    | '/billing'
     | '/projects'
     | '/studio/$projectId'
     | '/api/assets/$assetId/content/$filename'
@@ -230,8 +254,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/assets/'
     | '/_auth/billing/checkout/$sessionId'
+    | '/_auth/billing/topup/$sessionId'
     | '/api/assets/$assetId/complete'
     | '/api/assets/$assetId/content'
+    | '/_auth/_dashboard/billing/'
     | '/_auth/_dashboard/projects/'
     | '/_auth/studio/$projectId/'
     | '/api/assets/$assetId/content/$filename'
@@ -338,6 +364,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_auth/_dashboard/billing/': {
+      id: '/_auth/_dashboard/billing/'
+      path: '/billing'
+      fullPath: '/billing/'
+      preLoaderRoute: typeof AuthDashboardBillingIndexRouteImport
+      parentRoute: typeof AuthDashboardRouteRoute
+    }
     '/_auth/_dashboard/projects/': {
       id: '/_auth/_dashboard/projects/'
       path: '/projects'
@@ -350,6 +383,13 @@ declare module '@tanstack/react-router' {
       path: '/billing/checkout/$sessionId'
       fullPath: '/billing/checkout/$sessionId'
       preLoaderRoute: typeof AuthBillingCheckoutSessionIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
+    '/_auth/billing/topup/$sessionId': {
+      id: '/_auth/billing/topup/$sessionId'
+      path: '/billing/topup/$sessionId'
+      fullPath: '/billing/topup/$sessionId'
+      preLoaderRoute: typeof AuthBillingTopupSessionIdRouteImport
       parentRoute: typeof AuthRouteRoute
     }
     '/_auth/studio/$projectId/': {
@@ -384,10 +424,12 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthDashboardRouteRouteChildren {
+  AuthDashboardBillingIndexRoute: typeof AuthDashboardBillingIndexRoute
   AuthDashboardProjectsIndexRoute: typeof AuthDashboardProjectsIndexRoute
 }
 
 const AuthDashboardRouteRouteChildren: AuthDashboardRouteRouteChildren = {
+  AuthDashboardBillingIndexRoute: AuthDashboardBillingIndexRoute,
   AuthDashboardProjectsIndexRoute: AuthDashboardProjectsIndexRoute,
 }
 
@@ -412,12 +454,14 @@ interface AuthRouteRouteChildren {
   AuthDashboardRouteRoute: typeof AuthDashboardRouteRouteWithChildren
   AuthStudioProjectIdRouteRoute: typeof AuthStudioProjectIdRouteRouteWithChildren
   AuthBillingCheckoutSessionIdRoute: typeof AuthBillingCheckoutSessionIdRoute
+  AuthBillingTopupSessionIdRoute: typeof AuthBillingTopupSessionIdRoute
 }
 
 const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthDashboardRouteRoute: AuthDashboardRouteRouteWithChildren,
   AuthStudioProjectIdRouteRoute: AuthStudioProjectIdRouteRouteWithChildren,
   AuthBillingCheckoutSessionIdRoute: AuthBillingCheckoutSessionIdRoute,
+  AuthBillingTopupSessionIdRoute: AuthBillingTopupSessionIdRoute,
 }
 
 const AuthRouteRouteWithChildren = AuthRouteRoute._addFileChildren(

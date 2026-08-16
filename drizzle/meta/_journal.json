@@ -15,6 +15,20 @@
       "when": 1786811888489,
       "tag": "0001_dusty_ulik",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786881544558,
+      "tag": "0002_puzzling_vance_astro",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786886707811,
+      "tag": "0003_outstanding_hitman",
+      "breakpoints": true
     }
   ]
 }

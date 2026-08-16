@@ -1,4 +1,5 @@
 import type { AssetKind } from "#/db/schema";
+import { usd } from "#/lib/money";
 
 /**
  * The model catalogue: what the composer offers, and what the server has to
@@ -77,6 +78,42 @@ export interface ModelOption {
    * Speech models only.
    */
   voice?: string;
+  /**
+   * What one call to this model costs the person who asks for it.
+   *
+   * It lives on the entry for the same reason `gateway` does: "this model
+   * exists", "this model works" and "this model costs this much" are three
+   * facts about one thing, and a price table somewhere on the server would be a
+   * fourth list to reconcile — the one whose disagreements are invoices. The
+   * pairing with `gateway` is enforced rather than remembered; see
+   * {@link assertPricedGateway} at the foot of this file.
+   *
+   * These are **policy numbers**, not costs read off an invoice — the Gateway
+   * bills us in dollars per call and this is what the app sells that call for.
+   * Changing what a generation costs is changing the number on this line.
+   */
+  price?: ModelPrice;
+}
+
+/**
+ * What a price is counted in. One unit per modality, chosen as the thing the
+ * person actually varies:
+ *
+ * - `image` — per picture. Deliberately *not* per pixel tier: the image
+ *   resolution menu is not wired through to any provider (see
+ *   `gateway-provider.ts`), so charging more for `4K` would be charging for a
+ *   parameter that never leaves this app.
+ * - `second` — per second of video, which *is* sent, and multiplied by the
+ *   resolution tier in `pricing.ts`.
+ * - `1k_chars` — per thousand characters of text handed to a speech model,
+ *   which is the only input a TTS call has.
+ */
+export type PriceUnit = "image" | "second" | "1k_chars";
+
+export interface ModelPrice {
+  unit: PriceUnit;
+  /** Micro-dollars per unit — see `lib/money.ts`. */
+  amount: number;
 }
 
 /**
@@ -131,7 +168,8 @@ export const MODELS: readonly ModelOption[] = [
     // and no larger than 3840×2160 — so the tiers below are the call site's to
     // compose, and every ratio here stays inside that envelope at 4K.
     resolutions: ["1K", "2K", "4K"],
-    aspectRatios: ["1:1", "3:2", "2:3", "16:9", "9:16"]
+    aspectRatios: ["1:1", "3:2", "2:3", "16:9", "9:16"],
+    price: { unit: "image", amount: usd(0.09) }
   },
   {
     id: "gemini-3-pro-image",
@@ -160,7 +198,8 @@ export const MODELS: readonly ModelOption[] = [
     modality: "image",
     // Its published sizes run 1024² through 2816×1536 — two tiers, five shapes.
     resolutions: ["1K", "2K"],
-    aspectRatios: ["1:1", "3:4", "4:3", "9:16", "16:9"]
+    aspectRatios: ["1:1", "3:4", "4:3", "9:16", "16:9"],
+    price: { unit: "image", amount: usd(0.05) }
   },
   {
     id: "grok-imagine-image-2.0",
@@ -172,7 +211,8 @@ export const MODELS: readonly ModelOption[] = [
     // is being brought into line with. It documents 14 ratios; these are the
     // ones that are not a niche social crop.
     resolutions: ["1K", "2K"],
-    aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2"]
+    aspectRatios: ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "2:1", "1:2"],
+    price: { unit: "image", amount: usd(0.07) }
   },
   {
     // ⚠ The one id here not taken from its provider's own docs: BytePlus renders
@@ -187,7 +227,8 @@ export const MODELS: readonly ModelOption[] = [
     modality: "image",
     // Two tiers and eight shapes, agreed on by two independent API hosts.
     resolutions: ["1K", "2K"],
-    aspectRatios: ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"]
+    aspectRatios: ["1:1", "4:3", "3:4", "16:9", "9:16", "3:2", "2:3", "21:9"],
+    price: { unit: "image", amount: usd(0.04) }
   },
 
   // Voice — speech and TTS only, now that the two music generators have a
@@ -208,15 +249,24 @@ export const MODELS: readonly ModelOption[] = [
     // OpenAI's speech endpoint requires a voice; the catalogue is where a
     // model's own requirements belong, so the provider need not know whose
     // model it is holding.
-    voice: "alloy"
+    voice: "alloy",
+    price: { unit: "1k_chars", amount: usd(0.03) }
   },
-  { id: "grok-tts", name: "Grok TTS", provider: "xAI", modality: "voice", gateway: "xai/grok-tts" },
+  {
+    id: "grok-tts",
+    name: "Grok TTS",
+    provider: "xAI",
+    modality: "voice",
+    gateway: "xai/grok-tts",
+    price: { unit: "1k_chars", amount: usd(0.03) }
+  },
   {
     id: "s2.1-pro",
     name: "Fish Audio S2.1 Pro",
     provider: "Fish Audio",
     modality: "voice",
-    gateway: "fish-audio/s2.1-pro"
+    gateway: "fish-audio/s2.1-pro",
+    price: { unit: "1k_chars", amount: usd(0.02) }
   },
   {
     id: "gpt-realtime-2.1",
@@ -259,7 +309,8 @@ export const MODELS: readonly ModelOption[] = [
     // Veo's own lowercase `4k` next to an uppercase `1K` elsewhere is not a
     // typo: each is the string that provider's API accepts.
     aspectRatios: ["16:9", "9:16"],
-    durations: [4, 6, 8]
+    durations: [4, 6, 8],
+    price: { unit: "second", amount: usd(0.45) }
   },
   {
     id: "veo-3.1-lite-generate-preview",
@@ -269,7 +320,8 @@ export const MODELS: readonly ModelOption[] = [
     modality: "video",
     resolutions: ["720p", "1080p"],
     aspectRatios: ["16:9", "9:16"],
-    durations: [4, 6, 8]
+    durations: [4, 6, 8],
+    price: { unit: "second", amount: usd(0.18) }
   },
   {
     id: "sora-2",
@@ -302,7 +354,8 @@ export const MODELS: readonly ModelOption[] = [
     aspectRatios: ["16:9", "9:16", "1:1"],
     // Grok takes any whole number of seconds from 1 to 15 and defaults to 6.
     // These are presets across that range, not the API's own list.
-    durations: [4, 6, 8, 12, 15]
+    durations: [4, 6, 8, 12, 15],
+    price: { unit: "second", amount: usd(0.12) }
   },
   {
     // Same id caveat as Seedream above.
@@ -321,7 +374,8 @@ export const MODELS: readonly ModelOption[] = [
     // something to hand someone who never opened the menu.
     aspectRatios: ["16:9", "9:16", "21:9", "4:3", "1:1", "3:4"],
     // 4 to 15 seconds, any whole number — presets across the range, as with Grok.
-    durations: [4, 6, 8, 10, 12, 15]
+    durations: [4, 6, 8, 10, 12, 15],
+    price: { unit: "second", amount: usd(0.09) }
   }
 ];
 
@@ -337,3 +391,42 @@ export const MODELS: readonly ModelOption[] = [
 export function findModel(id: string): ModelOption | undefined {
   return MODELS.find((model) => model.id === id);
 }
+
+/**
+ * `gateway` and `price` have to arrive together, and this is what says so.
+ *
+ * The two halves fail in opposite, equally quiet ways. A Gateway model with no
+ * price runs for real and bills nothing — the meter has a hole in it and the
+ * only symptom is a bill from Vercel that nothing on our side accounts for. A
+ * priced model with no Gateway id quotes a number in the composer and then
+ * falls through to `sampleProvider`, so someone reads a price, gets a stand-in
+ * file, and is charged nothing: the number was a lie in the other direction.
+ *
+ * Development only. A catalogue typo should stop the person editing the
+ * catalogue, not the Worker serving everyone else — and by the time a build
+ * reaches production this has already run on every machine that touched it.
+ */
+export function assertPricedGateway(models: readonly ModelOption[] = MODELS) {
+  for (const model of models) {
+    // The Gateway has no music models at all, and `getProvider` refuses to
+    // route one there whatever this field says. A music entry that grew a
+    // `gateway` id would therefore be quoted a price on the client and served
+    // a stand-in file by the server — the exact drift this function exists to
+    // make impossible, arriving through the one door the pairing check misses.
+    if (model.modality === "music" && model.gateway) {
+      throw new Error(
+        `Model "${model.id}" is music and names a Gateway id, but the Gateway serves no music models.`
+      );
+    }
+
+    if (Boolean(model.gateway) === Boolean(model.price)) continue;
+
+    throw new Error(
+      model.gateway
+        ? `Model "${model.id}" is served by the Gateway but has no price, so it would generate for free.`
+        : `Model "${model.id}" has a price but no Gateway id, so it would quote a number and then return a stand-in file.`
+    );
+  }
+}
+
+if (import.meta.env.DEV) assertPricedGateway();

@@ -1,7 +1,8 @@
 import { experimental_generateVideo as generateVideo, generateImage, generateSpeech } from "ai";
+import type { createGateway } from "ai";
 
 import type { ModelOption } from "#/lib/models";
-import { getGateway } from "#/server/generation/gateway";
+import type { GatewayCall } from "#/server/generation/metering";
 import type {
   GenerationProvider,
   GenerationReference,
@@ -31,8 +32,26 @@ import type {
  * generate — a Worker isolate has 128MB, and a long clip at 1080p will reach
  * it. Worth knowing before someone raises the duration menu's top end.
  */
-function fileResult(file: { uint8Array: Uint8Array; mediaType: string }): GenerationResult {
-  return { body: toArrayBuffer(file.uint8Array), contentType: file.mediaType };
+function fileResult(
+  file: { uint8Array: Uint8Array; mediaType: string },
+  call: GatewayCall
+): GenerationResult {
+  return { body: toArrayBuffer(file.uint8Array), contentType: file.mediaType, call };
+}
+
+/**
+ * What the meter is told about a call, assembled where the call was made.
+ *
+ * `providerMetadata` goes through untouched: the Gateway's own cost figure
+ * rides in it, and this module has no business deciding which of its keys
+ * matter — `metering.ts` reads it, and is written to survive the shape moving.
+ */
+function callRecord(
+  gatewayModel: string,
+  startedAt: number,
+  providerMetadata?: unknown
+): GatewayCall {
+  return { gatewayModel, latencyMs: Math.round(performance.now() - startedAt), providerMetadata };
 }
 
 /**
@@ -112,21 +131,24 @@ function imageReferences(references: readonly GenerationReference[]) {
  * posting it onward, when the vendor can fetch it directly. It is also the
  * reason those URLs are minted short-lived — see `GenerationReference`.
  */
-export function gatewayProvider(model: ModelOption): GenerationProvider {
+export function gatewayProvider(
+  model: ModelOption,
+  gateway: ReturnType<typeof createGateway>
+): GenerationProvider {
   return {
     async run(request: GenerationRequest, signal?: AbortSignal): Promise<GenerationResult> {
-      const gateway = getGateway();
+      // Unreachable through `getProvider`, which checks this before routing
+      // here. Left as a throw so a future caller that skips that check fails
+      // loudly instead of sending a request the SDK cannot address.
+      if (!model.gateway) throw new Error("That model is not served by the AI Gateway.");
 
-      // Unreachable through `getProvider`, which checks both before routing
-      // here. Left as a throw so a future caller that skips those checks fails
-      // loudly instead of sending a request with no credentials.
-      if (!gateway || !model.gateway) throw new Error("The AI Gateway is not configured.");
+      const startedAt = performance.now();
 
       switch (request.modality) {
         case "image": {
           const images = imageReferences(request.references);
 
-          const { image } = await generateImage({
+          const { image, providerMetadata } = await generateImage({
             model: gateway.imageModel(model.gateway),
             // The object form is what turns a plain generation into an edit:
             // with pictures attached the prompt is written *about* them.
@@ -138,12 +160,12 @@ export function gatewayProvider(model: ModelOption): GenerationProvider {
             abortSignal: signal
           });
 
-          return fileResult(image);
+          return fileResult(image, callRecord(model.gateway, startedAt, providerMetadata));
         }
         case "video": {
           const [first] = imageReferences(request.references);
 
-          const { video } = await generateVideo({
+          const { video, providerMetadata } = await generateVideo({
             model: gateway.videoModel(model.gateway),
             // One picture, not the list: this is image-to-video, where the
             // attachment is the opening frame rather than a mood board.
@@ -154,17 +176,17 @@ export function gatewayProvider(model: ModelOption): GenerationProvider {
             abortSignal: signal
           });
 
-          return fileResult(video);
+          return fileResult(video, callRecord(model.gateway, startedAt, providerMetadata));
         }
         case "voice": {
-          const { audio } = await generateSpeech({
+          const { audio, providerMetadata } = await generateSpeech({
             model: gateway.speechModel(model.gateway),
             text: request.prompt,
             voice: model.voice,
             abortSignal: signal
           });
 
-          return fileResult(audio);
+          return fileResult(audio, callRecord(model.gateway, startedAt, providerMetadata));
         }
         case "music":
           // See the module comment: nothing routes here.

@@ -12,6 +12,8 @@ import type { AssetKind } from "#/db/schema";
 import type { AssetSummary } from "#/lib/assets";
 import { MODELS, modelAccepts } from "#/lib/models";
 import type { Modality, ModelOption } from "#/lib/models";
+import { formatUsd } from "#/lib/money";
+import { quoteGeneration } from "#/lib/pricing";
 
 /**
  * Re-exported so the modules that already read these from the composer keep
@@ -145,12 +147,15 @@ export interface ComposerHandle {
 
 export interface AIComposerProps {
   /**
-   * Optional because the composer is complete without it: it manages its own
-   * draft and clears on send. There is no chat table, no server function and no
-   * provider credentials wired up behind this yet, so today nothing passes a
-   * handler — this is the seam that gets filled when a prompt has somewhere to go.
+   * Where a finished prompt goes. Optional because the composer is complete
+   * without it — it manages its own draft and clears on send.
+   *
+   * Returning `false` refuses the press and leaves the draft where it is, which
+   * is what the canvas does when the organization's wallet cannot cover the
+   * generation. Anything else (including nothing) accepts it and clears the
+   * editor.
    */
-  onSubmit?: (submission: ComposerSubmission) => void;
+  onSubmit?: (submission: ComposerSubmission) => boolean | void;
   /** Disables the composer and puts a spinner in the send button. */
   pending?: boolean;
   /**
@@ -159,6 +164,17 @@ export interface AIComposerProps {
    * two copies of it would disagree the moment one of them refetched.
    */
   assets?: readonly AssetSummary[];
+  /**
+   * Whether model calls are billed at all — that is, whether this deployment
+   * has an AI Gateway key.
+   *
+   * Passed in rather than derived, because it is a server fact and the price
+   * shown here has to be the price the server will charge. It arrives on the
+   * wallet query the canvas already loads to check the balance before it lets
+   * a generation start. Defaults to false, so a caller that has not answered
+   * yet quotes nothing rather than quoting a price that may not apply.
+   */
+  billingEnabled?: boolean;
   ref?: Ref<ComposerHandle>;
   className?: string;
 }
@@ -175,6 +191,7 @@ export default function AIComposer({
   onSubmit,
   pending = false,
   assets,
+  billingEnabled = false,
   ref,
   className
 }: AIComposerProps) {
@@ -203,6 +220,13 @@ export default function AIComposer({
     : undefined;
   const duration = model.durations ? (durationByModel[model.id] ?? model.durations[0]) : undefined;
 
+  // Priced from the controls alone. The prompt is deliberately left out even
+  // though speech is billed by its length: the text lives in the editor and
+  // reading it on every keystroke would re-render this whole component to
+  // change one label. Speech is marked approximate instead — see below.
+  const quote = quoteGeneration({ model: model.id, resolution, duration }, billingEnabled);
+  const approximate = quote.unit === "1k_chars";
+
   const mentions = useAssetMentions({
     assets,
     accepts: modelAccepts(model),
@@ -226,7 +250,7 @@ export default function AIComposer({
 
     if (draft.text === "") return;
 
-    onSubmit?.({
+    const accepted = onSubmit?.({
       text: draft.text,
       modality,
       model: model.id,
@@ -235,6 +259,12 @@ export default function AIComposer({
       duration,
       referenceAssetIds: draft.assetIds
     });
+
+    // A refused press keeps the draft. The canvas turns one away when the
+    // wallet cannot cover it, and clearing the editor anyway would take the
+    // prompt as payment for the refusal — the one thing somebody in that
+    // position still has, and the thing they will need again after topping up.
+    if (accepted === false) return;
 
     mentions.clear();
   }
@@ -419,6 +449,34 @@ export default function AIComposer({
               />
             ) : null}
           </div>
+
+          {/*
+           * What pressing the button will cost, next to the button.
+           *
+           * The wallet is spent per generation, so the price belongs where the
+           * decision is made rather than on a billing page somebody would have
+           * to go and look at first. It moves with the controls beside it — a
+           * duration or a resolution changes it in place — which is also the
+           * cheapest way to explain why 1080p costs what it does.
+           *
+           * Absent, not zero, when nothing is being charged: a model the
+           * Gateway does not serve returns a stand-in file, and "¥0.00" next to
+           * the send button would read as a claim about the price rather than
+           * about the file.
+           */}
+          {quote.billable ? (
+            <span
+              className="shrink-0 text-[11px] leading-4 text-neutral-500 tabular-nums"
+              title={
+                approximate
+                  ? "Charged per 1,000 characters of text, so the final amount depends on what you write."
+                  : undefined
+              }
+            >
+              {approximate ? "~" : ""}
+              {formatUsd(quote.total)}
+            </span>
+          ) : null}
 
           <Button
             icon

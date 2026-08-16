@@ -99,6 +99,13 @@ export function useGenerations() {
     } finally {
       clearInterval(heartbeat);
       inFlight.current.delete(id);
+
+      // Both outcomes move the balance: a generation debits it, and one that
+      // failed debits and then refunds. Invalidating on either — and on a
+      // cancel, which costs nothing but is not worth a third branch to
+      // exclude — is what keeps the price beside the send button honest about
+      // what is left to spend it from.
+      await queryClient.invalidateQueries({ queryKey: ["credits"] });
     }
   }
 

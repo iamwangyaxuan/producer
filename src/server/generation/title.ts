@@ -1,7 +1,8 @@
 import { generateObject } from "ai";
+import type { createGateway } from "ai";
 import { z } from "zod";
 
-import { getGateway } from "#/server/generation/gateway";
+import type { GatewayCall } from "#/server/generation/metering";
 
 /**
  * Naming a generated file.
@@ -40,7 +41,7 @@ const MAX_TITLE_LENGTH = 60;
  * possible. Haiku is the cheap end of the same family, and through the Gateway
  * it is one string away from being any other model on the list.
  */
-const TITLE_MODEL = "anthropic/claude-haiku-4.5";
+export const TITLE_MODEL = "anthropic/claude-haiku-4.5";
 
 /**
  * Well under any provider's own patience: naming runs alongside the
@@ -63,32 +64,59 @@ const SYSTEM = [
   "- No quotes, no trailing punctuation, no file extension."
 ].join("\n");
 
+export interface AssetTitleResult {
+  /** Null when the model could not be reached, or answered with nothing. */
+  title: string | null;
+  /**
+   * The Gateway call this made, for the meter — present even when the naming
+   * failed, because a request that was sent and then errored is still a request
+   * the Gateway may have billed us for. Null only when no request was made at
+   * all: no key, or an empty prompt.
+   */
+  call: GatewayCall | null;
+  error: string | null;
+}
+
+const NOT_CALLED: AssetTitleResult = { title: null, call: null, error: null };
+
 /**
- * A short name for what this prompt produces, or null if the model could not
- * be reached.
+ * A short name for what this prompt produces, plus what asking for it cost.
  *
- * Null rather than a thrown error, and never a reason to fail the generation:
- * a file whose name did not come back is still the file the person asked for,
- * and `assetTitle` has a fallback chain for exactly this. The caller runs it
+ * Never a thrown error, and never a reason to fail the generation: a file whose
+ * name did not come back is still the file the person asked for, and
+ * `assetTitle` has a fallback chain for exactly this. The caller runs it
  * alongside the provider so its latency hides behind work that is already
  * slower.
+ *
+ * It answers with the call it made as well as the name, because this is the
+ * *second* Gateway request every generation sends and a meter that only counted
+ * the first would under-report every generation in the product by one call. The
+ * flat `NAMING_FEE` in `pricing.ts` is what pays for it.
  */
-export async function generateAssetTitle(prompt: string): Promise<string | null> {
+export async function generateAssetTitle(
+  prompt: string,
+  gateway: ReturnType<typeof createGateway> | null
+): Promise<AssetTitleResult> {
   const trimmed = prompt.trim();
 
-  if (trimmed === "") return null;
+  if (trimmed === "") return NOT_CALLED;
 
-  // No key, no request. Without this the SDK still opens a connection it
+  // No gateway, no request. Without this the SDK still opens a connection it
   // cannot authenticate, and the failure arrives as an async socket error from
-  // deep inside `fetch` — after this function has already returned its null,
-  // so the `catch` below never sees it and the dev server shows an error
-  // overlay for a call that was working as designed.
-  const gateway = getGateway();
+  // deep inside `fetch` — after this function has already returned, so the
+  // `catch` below never sees it and the dev server shows an error overlay for
+  // a call that was working as designed.
+  //
+  // It arrives as an argument rather than being looked up, so the name is
+  // written on the same credentials the media was generated with: an
+  // organization on its own key gets billed by Vercel for both halves of its
+  // generation, or for neither.
+  if (!gateway) return NOT_CALLED;
 
-  if (!gateway) return null;
+  const startedAt = performance.now();
 
   try {
-    const { object } = await generateObject({
+    const { object, usage, providerMetadata } = await generateObject({
       model: gateway.languageModel(TITLE_MODEL),
       // A schema rather than a parsed reply: the SDK holds the model to the
       // shape and hands back a typed object, so there is no format to agree on
@@ -105,14 +133,30 @@ export async function generateAssetTitle(prompt: string): Promise<string | null>
 
     const title = object.title.trim();
 
-    if (!title) return null;
-
-    return title.slice(0, MAX_TITLE_LENGTH);
+    return {
+      title: title ? title.slice(0, MAX_TITLE_LENGTH) : null,
+      call: {
+        gatewayModel: TITLE_MODEL,
+        latencyMs: Math.round(performance.now() - startedAt),
+        providerMetadata,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens
+      },
+      error: null
+    };
   } catch (error) {
     // Worth a line — a naming call failing every time means a missing or
     // rejected key, which is silent otherwise because the fallback covers it.
     console.error("failed to generate an asset title", error);
 
-    return null;
+    return {
+      title: null,
+      // Recorded as a call that happened, because it did: the request left this
+      // Worker. Whether the Gateway billed for it is its business; leaving it
+      // out of the meter would make a run of failures look like a run of
+      // generations that never needed naming.
+      call: { gatewayModel: TITLE_MODEL, latencyMs: Math.round(performance.now() - startedAt) },
+      error: error instanceof Error ? error.message : "Naming failed."
+    };
   }
 }

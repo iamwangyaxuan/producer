@@ -344,6 +344,363 @@ export const organizationDraft = pgTable(
   ]
 );
 
+/* -------------------------------------------------------------------------- */
+/* Credits: the prepaid wallet every model call is paid out of                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One wallet per organization.
+ *
+ * Money in these four tables is an integer count of **micro-dollars** (1e-6
+ * USD), and every balance, ledger entry and price is in that unit. Not cents,
+ * because a single model call genuinely costs a fraction of one — a thousand
+ * characters of speech is a few thousandths of a dollar — and a unit that
+ * cannot represent the smallest thing being sold rounds every one of them to
+ * either nothing or a whole cent. Not `numeric`, because a wallet is only safe
+ * if `balance = balance - x` is exact in one statement; integers give that,
+ * while decimals invite a driver to hand back a string and a caller to
+ * `parseFloat` it. `bigint` in `number` mode like `asset.sizeBytes`, whose
+ * ±2^53 is ±9 billion dollars. Amounts stay in **cents** only where they touch
+ * Stripe (`credit_topup.chargeAmount`) — converting once, at that edge, is what
+ * keeps a rounding error out of a charge.
+ *
+ * USD is also the currency the AI Gateway bills us in, which is what makes
+ * `usage_event` legible: what a call was sold for and what it cost sit in two
+ * columns of one currency, so the margin is a subtraction rather than an
+ * exchange rate this app would have to invent and then keep.
+ *
+ * Per *organization* because that is the thing work happens inside: a project,
+ * its canvas and its assets are all org-scoped, so the bill for generating them
+ * belongs to the same tenant rather than to whoever happened to press the
+ * button. Everyone has a `private` organization of their own, so "top up my own
+ * account" is still exactly one wallet away for a solo user. The payer stays a
+ * person — Stripe's customer is `user.stripeCustomerId` and the plugin runs
+ * with `customerType: "user"` — which is why `credit_topup` names both: an
+ * organization is credited, a person is charged.
+ *
+ * `balance` is materialized rather than summed from `credit_transaction` on
+ * every read: a debit has to be one atomic conditional update
+ * (`set balance = balance - x where balance >= x`), which is what makes two
+ * concurrent generations unable to spend the same last dollar twice. The ledger
+ * is the audit trail and must reconcile — `sum(amount) = balance` — but it is
+ * not what a charge reads.
+ *
+ * `restrict` rather than `cascade`, for the reason `asset.organizationId` is:
+ * a cascade here would silently burn a balance somebody paid for. Deleting an
+ * organization that still holds money has to be a deliberate act that empties
+ * the wallet first, and until it is, Postgres refuses — loudly, which is the
+ * better of the two failures.
+ */
+export const creditAccount = pgTable(
+  "credit_account",
+  {
+    organizationId: uuid("organization_id")
+      .primaryKey()
+      .references(() => organization.id, { onDelete: "restrict" }),
+    /** Micro-dollars. Never negative — the CHECK is the last line of that defence. */
+    balance: bigint("balance", { mode: "number" }).default(0).notNull(),
+    /** Lifetime totals, for the account page. Derived, and never read by a charge. */
+    lifetimeToppedUp: bigint("lifetime_topped_up", { mode: "number" }).default(0).notNull(),
+    lifetimeSpent: bigint("lifetime_spent", { mode: "number" }).default(0).notNull(),
+    createdAt: tstz("created_at").defaultNow().notNull(),
+    updatedAt: tstz("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull()
+  },
+  (table) => [check("credit_account_balance_check", sql`${table.balance} >= 0`)]
+);
+
+export const CREDIT_TRANSACTION_KINDS = ["topup", "usage", "refund", "adjustment"] as const;
+
+export type CreditTransactionKind = (typeof CREDIT_TRANSACTION_KINDS)[number];
+
+/**
+ * Every movement of the wallet, signed: `+` puts money in, `-` takes it out.
+ *
+ * Signed rather than an unsigned amount plus a direction inferred from `kind`,
+ * because the one query this table exists to answer — "does the ledger agree
+ * with the balance" — is then `sum(amount)` and not a `case` expression that
+ * has to be kept in step with the kind list.
+ *
+ * `referenceId` is what the entry is *about*, and it is the idempotency key:
+ * an asset id for `usage` and `refund`, a top-up order id for `topup`. The
+ * partial unique index over (`kind`, `referenceId`) is what makes a replayed
+ * Stripe webhook, a double-submitted retry and a re-run refund all land once —
+ * enforced by the database rather than by remembering to check first.
+ */
+export const creditTransaction = pgTable(
+  "credit_transaction",
+  {
+    id: uuid("id").primaryKey().default(sql.raw(generate_id_fun)),
+    /** The wallet this moved. `restrict`, like the wallet itself. */
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "restrict" }),
+    /**
+     * Who did it — the person who pressed generate, or who paid for the top-up.
+     *
+     * Nullable and `set null` rather than part of the key: an organization's
+     * statement has to survive one of its members closing their account, and
+     * "somebody who is no longer here spent this" is a truthful line where a
+     * missing row would not be. It is display and attribution, never
+     * authorization: what a charge is allowed to touch is decided by
+     * `organizationId` alone.
+     */
+    userId: uuid("user_id").references(() => user.id, { onDelete: "set null" }),
+    kind: text("kind").$type<CreditTransactionKind>().notNull(),
+    /** Micro-dollars, signed. */
+    amount: bigint("amount", { mode: "number" }).notNull(),
+    /** The balance this entry produced — what a statement line has to print. */
+    balanceAfter: bigint("balance_after", { mode: "number" }).notNull(),
+    /**
+     * Not a foreign key, because it points at two different tables depending on
+     * `kind` (and at an `asset` row that the sweep is allowed to hard-delete
+     * long before its billing history stops mattering). It is an idempotency
+     * key first and a link second.
+     */
+    referenceId: uuid("reference_id"),
+    /** One line, written for the person reading their statement. */
+    description: text("description"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    createdAt: tstz("created_at").defaultNow().notNull()
+  },
+  (table) => [
+    index("credit_transaction_organizationId_createdAt_idx").on(
+      table.organizationId,
+      table.createdAt
+    ),
+    uniqueIndex("credit_transaction_kind_reference_idx")
+      .on(table.kind, table.referenceId)
+      .where(sql`${table.referenceId} is not null`),
+    check(
+      "credit_transaction_kind_check",
+      sql`${table.kind} in ('topup', 'usage', 'refund', 'adjustment')`
+    ),
+    // The sign is part of what a kind *means*, so it is checked rather than
+    // trusted: a `usage` row that credited someone would reconcile perfectly
+    // and still be wrong.
+    check(
+      "credit_transaction_amount_check",
+      sql`case
+            when ${table.kind} in ('topup', 'refund') then ${table.amount} > 0
+            when ${table.kind} = 'usage' then ${table.amount} < 0
+            else ${table.amount} <> 0
+          end`
+    )
+  ]
+);
+
+export const CREDIT_TOPUP_STATUSES = ["pending", "paid", "canceled"] as const;
+
+export type CreditTopupStatus = (typeof CREDIT_TOPUP_STATUSES)[number];
+
+/**
+ * One order to put money in the wallet, from the moment it is started until the
+ * payment lands.
+ *
+ * It exists for the same reason `organization_draft` does: the checkout has to
+ * name something before the thing it produces exists. Here what it names is the
+ * grant — Stripe carries this row's id in the payment's metadata, and the
+ * webhook credits *this row's* `creditAmount` rather than whatever amount the
+ * event happens to mention.
+ *
+ * The two amounts are deliberately separate columns in **different units**, and
+ * they are what the 5% fee actually is: `creditAmount` is what lands in the
+ * wallet (micro-yuan), `chargeAmount` is what the card is charged (fen, which
+ * is the unit Stripe quotes CNY in). `feeRateBps` is stamped at order time so a
+ * later change to the published rate cannot rewrite what someone already paid.
+ */
+export const creditTopup = pgTable(
+  "credit_topup",
+  {
+    id: uuid("id").primaryKey().default(sql.raw(generate_id_fun)),
+    /** The wallet being credited. */
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "restrict" }),
+    /**
+     * Who is paying. Two columns rather than one because they are two different
+     * facts: an organization is credited, and a *person* is charged — Stripe's
+     * customer is `user.stripeCustomerId`, and a card belongs to somebody.
+     * Nullable for the same reason the ledger's is: the order is a financial
+     * record of the organization and outlives whoever placed it.
+     */
+    userId: uuid("user_id").references(() => user.id, { onDelete: "set null" }),
+    /** Micro-dollars credited on success. */
+    creditAmount: bigint("credit_amount", { mode: "number" }).notNull(),
+    /** Cents actually charged — `creditAmount` plus the fee, in Stripe's unit. */
+    chargeAmount: integer("charge_amount").notNull(),
+    currency: text("currency").default("usd").notNull(),
+    /** Basis points; 500 is the 5% this app charges today. */
+    feeRateBps: integer("fee_rate_bps").notNull(),
+    status: text("status").$type<CreditTopupStatus>().default("pending").notNull(),
+    /** Set as soon as the Checkout Session is minted, so a page can find its order. */
+    stripeSessionId: text("stripe_session_id").unique(),
+    stripePaymentIntentId: text("stripe_payment_intent_id"),
+    paidAt: tstz("paid_at"),
+    createdAt: tstz("created_at").defaultNow().notNull(),
+    updatedAt: tstz("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull()
+  },
+  (table) => [
+    index("credit_topup_organizationId_createdAt_idx").on(table.organizationId, table.createdAt),
+    check("credit_topup_credit_amount_check", sql`${table.creditAmount} > 0`),
+    check("credit_topup_charge_amount_check", sql`${table.chargeAmount} > 0`),
+    check("credit_topup_fee_rate_check", sql`${table.feeRateBps} >= 0`),
+    check("credit_topup_status_check", sql`${table.status} in ('pending', 'paid', 'canceled')`)
+  ]
+);
+
+/**
+ * An organization's own AI Gateway key, encrypted.
+ *
+ * Bring-your-own-key is a *billing* decision before it is a technical one: an
+ * organization that supplies its own key has its generations billed by Vercel
+ * directly, so this app stops charging its wallet for them. That is why the key
+ * sits at the organization and is set by the roles that already control
+ * spending, rather than per person — one member's card silently paying for
+ * another member's generations is the outcome nobody would have asked for.
+ *
+ * A table of its own rather than a column on `organization`, for two reasons.
+ * `organization` belongs to better-auth, and a secret riding along in a row
+ * that half the app selects is one careless `select()` away from a response
+ * body. And a key has a lifecycle a column does not model well — verified when
+ * it arrives, replaced, removed — which is what the timestamps here are for.
+ *
+ * `cascade`, unlike the credit tables: a key is not money, and an organization
+ * that goes should take its secrets with it rather than leave them behind.
+ */
+export const organizationGatewayKey = pgTable("organization_gateway_key", {
+  organizationId: uuid("organization_id")
+    .primaryKey()
+    .references(() => organization.id, { onDelete: "cascade" }),
+  /**
+   * AES-GCM ciphertext, base64. Encrypted rather than stored as given, because
+   * this is a live credential for somebody else's account: a database dump, a
+   * log of a query, or a backup restored somewhere less careful should not be
+   * enough to spend their money. See `server/generation/gateway-key.ts` for the
+   * key derivation and for what rotating `BETTER_AUTH_SECRET` costs.
+   */
+  ciphertext: text("ciphertext").notNull(),
+  /** The 12-byte nonce that ciphertext was sealed with, base64. Never reused. */
+  iv: text("iv").notNull(),
+  /**
+   * The last few characters, in clear, so the settings page can show *which*
+   * key is installed without ever decrypting one. Enough to recognise, not
+   * enough to use.
+   */
+  preview: text("preview").notNull(),
+  /** Who installed it. `set null`, so the key outlives their account. */
+  createdBy: uuid("created_by").references(() => user.id, { onDelete: "set null" }),
+  /**
+   * When the Gateway last confirmed this key works. Set on save, because a key
+   * is verified before it is stored — a rejected credential accepted into the
+   * database would turn every generation in the organization into a failure
+   * with no obvious cause.
+   */
+  verifiedAt: tstz("verified_at").notNull(),
+  createdAt: tstz("created_at").defaultNow().notNull(),
+  updatedAt: tstz("updated_at")
+    .defaultNow()
+    .$onUpdate(() => /* @__PURE__ */ new Date())
+    .notNull()
+});
+
+/** Whose AI Gateway credentials a call used — ours, or the organization's own. */
+export const GATEWAY_KEY_SOURCES = ["system", "own"] as const;
+
+export type GatewayKeySource = (typeof GATEWAY_KEY_SOURCES)[number];
+
+export const USAGE_EVENT_STATUSES = ["succeeded", "failed"] as const;
+
+export type UsageEventStatus = (typeof USAGE_EVENT_STATUSES)[number];
+
+/** What the call was for. `generation` is the media itself; `title` names it. */
+export const USAGE_EVENT_PURPOSES = ["generation", "title"] as const;
+
+export type UsageEventPurpose = (typeof USAGE_EVENT_PURPOSES)[number];
+
+/**
+ * One row per request that left this app for the AI Gateway.
+ *
+ * Separate from `credit_transaction` because they count different things and
+ * one is not derivable from the other: a single generation is **one** charge and
+ * **two** Gateway calls (the media, and the small language model that names
+ * it), while a generation on a model the Gateway does not serve is zero calls
+ * and zero charges. Folding the calls into the ledger would either invent
+ * zero-amount money movements or lose the naming call entirely.
+ *
+ * `chargedAmount` is what the wallet was actually debited *for this call*, and
+ * `upstreamCost` is what the Gateway said the call cost us. Both are
+ * micro-dollars, so the margin on any slice of traffic is one subtraction —
+ * which is the whole reason both are here, and a large part of why the wallet
+ * is denominated in the currency the Gateway bills in.
+ */
+export const usageEvent = pgTable(
+  "usage_event",
+  {
+    id: uuid("id").primaryKey().default(sql.raw(generate_id_fun)),
+    /** The wallet that paid — the axis every report on this table groups by. */
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "restrict" }),
+    /** Who asked for it. Attribution, and nullable for the ledger's reason. */
+    userId: uuid("user_id").references(() => user.id, { onDelete: "set null" }),
+    projectId: uuid("project_id").references(() => project.id, { onDelete: "set null" }),
+    assetId: uuid("asset_id").references(() => asset.id, { onDelete: "set null" }),
+    /** The charge that paid for this call, when one did. */
+    transactionId: uuid("transaction_id").references(() => creditTransaction.id, {
+      onDelete: "set null"
+    }),
+    purpose: text("purpose").$type<UsageEventPurpose>().notNull(),
+    /** Null for the naming call, which produces text rather than media. */
+    modality: text("modality").$type<AssetKind>(),
+    /** Catalogue id, e.g. `veo-3.1-generate-preview`. */
+    model: text("model").notNull(),
+    /** What was actually sent to the Gateway, e.g. `google/veo-3.1-generate-001`. */
+    gatewayModel: text("gateway_model"),
+    status: text("status").$type<UsageEventStatus>().notNull(),
+    error: text("error"),
+    /** What was billed by: images, seconds, thousands of characters, tokens. */
+    unit: text("unit"),
+    quantity: doublePrecision("quantity"),
+    /**
+     * Whose credentials the call went out on.
+     *
+     * Recorded rather than inferred from `chargedAmount`, because zero has two
+     * different meanings — a call on the organization's own key, and a call
+     * that was refunded — and a usage report that cannot tell those apart is
+     * the one place somebody would go to ask exactly that.
+     */
+    keySource: text("key_source").$type<GatewayKeySource>().notNull().default("system"),
+    /** Micro-dollars taken from the wallet for this call; 0 when it was free. */
+    chargedAmount: bigint("charged_amount", { mode: "number" }).default(0).notNull(),
+    /**
+     * What the Gateway said the call cost us, straight from its own report and
+     * in the same unit as the column above it — the Gateway bills in USD, which
+     * is why this app's wallet is in USD too. Null when it reported no cost.
+     */
+    upstreamCost: bigint("upstream_cost", { mode: "number" }),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    latencyMs: integer("latency_ms"),
+    /** The provider metadata the cost was read out of, kept for disputes. */
+    metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    createdAt: tstz("created_at").defaultNow().notNull()
+  },
+  (table) => [
+    index("usage_event_organizationId_createdAt_idx").on(table.organizationId, table.createdAt),
+    index("usage_event_userId_createdAt_idx").on(table.userId, table.createdAt),
+    index("usage_event_assetId_idx").on(table.assetId),
+    check("usage_event_status_check", sql`${table.status} in ('succeeded', 'failed')`),
+    check("usage_event_key_source_check", sql`${table.keySource} in ('system', 'own')`),
+    check("usage_event_purpose_check", sql`${table.purpose} in ('generation', 'title')`)
+  ]
+);
+
 export const ssoProvider = pgTable("sso_provider", {
   id: uuid("id").primaryKey().default(sql.raw(generate_id_fun)),
   issuer: text("issuer").notNull(),
@@ -625,6 +982,71 @@ export const userRelations = relations(user, ({ many }) => ({
   ssoProviders: many(ssoProvider),
   projects: many(project),
   organizationDrafts: many(organizationDraft),
+  /** Money this person moved, in whichever organization they moved it in. */
+  creditTransactions: many(creditTransaction),
+  creditTopups: many(creditTopup),
+  usageEvents: many(usageEvent)
+}));
+
+export const organizationGatewayKeyRelations = relations(organizationGatewayKey, ({ one }) => ({
+  organization: one(organization, {
+    fields: [organizationGatewayKey.organizationId],
+    references: [organization.id]
+  })
+}));
+
+export const creditAccountRelations = relations(creditAccount, ({ one }) => ({
+  organization: one(organization, {
+    fields: [creditAccount.organizationId],
+    references: [organization.id]
+  })
+}));
+
+export const creditTransactionRelations = relations(creditTransaction, ({ one, many }) => ({
+  organization: one(organization, {
+    fields: [creditTransaction.organizationId],
+    references: [organization.id]
+  }),
+  user: one(user, {
+    fields: [creditTransaction.userId],
+    references: [user.id]
+  }),
+  /** The Gateway calls this charge paid for — usually one, two for a generation. */
+  usageEvents: many(usageEvent)
+}));
+
+export const creditTopupRelations = relations(creditTopup, ({ one }) => ({
+  organization: one(organization, {
+    fields: [creditTopup.organizationId],
+    references: [organization.id]
+  }),
+  user: one(user, {
+    fields: [creditTopup.userId],
+    references: [user.id]
+  })
+}));
+
+export const usageEventRelations = relations(usageEvent, ({ one }) => ({
+  user: one(user, {
+    fields: [usageEvent.userId],
+    references: [user.id]
+  }),
+  organization: one(organization, {
+    fields: [usageEvent.organizationId],
+    references: [organization.id]
+  }),
+  project: one(project, {
+    fields: [usageEvent.projectId],
+    references: [project.id]
+  }),
+  asset: one(asset, {
+    fields: [usageEvent.assetId],
+    references: [asset.id]
+  }),
+  transaction: one(creditTransaction, {
+    fields: [usageEvent.transactionId],
+    references: [creditTransaction.id]
+  })
 }));
 
 /**
@@ -663,7 +1085,12 @@ export const organizationRelations = relations(organization, ({ one, many }) => 
   members: many(member),
   invitations: many(invitation),
   projects: many(project),
-  assets: many(asset)
+  assets: many(asset),
+  creditAccount: one(creditAccount),
+  gatewayKey: one(organizationGatewayKey),
+  creditTransactions: many(creditTransaction),
+  creditTopups: many(creditTopup),
+  usageEvents: many(usageEvent)
 }));
 
 export const memberRelations = relations(member, ({ one }) => ({

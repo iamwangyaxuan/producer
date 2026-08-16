@@ -11,6 +11,7 @@ import { env } from "cloudflare:workers";
 import { getDB, schema } from "#/db";
 import { SEAT_PLANS } from "#/lib/plans";
 import { stripe as stripeClient, stripeWebhookSecret } from "#/server/billing/stripe-client";
+import { handleStripeEvent } from "#/server/billing/stripe-events";
 import { sendEmail } from "#/server/email/send";
 import {
   passwordChangedEmail,
@@ -336,6 +337,21 @@ export const auth = betterAuth({
     stripePlugin({
       stripeClient,
       stripeWebhookSecret,
+      /**
+       * Everything the plugin does not sell, on the same endpoint it already
+       * verifies signatures for.
+       *
+       * Credit top-ups are one-time payments, which this plugin has no concept
+       * of — it only ever creates `mode: "subscription"` sessions. Rather than
+       * a second webhook route with a second secret to configure, they settle
+       * here: `onEvent` runs for every event, and the one they settle on
+       * (`payment_intent.succeeded`) is one the plugin passes straight through
+       * without trying to read a subscription out of it.
+       *
+       * Anything thrown here becomes a non-200 and therefore a Stripe retry —
+       * see `handleStripeEvent` for why that is the right way to fail.
+       */
+      onEvent: handleStripeEvent,
       // Signing up should not depend on a billing system being reachable, and
       // most accounts never buy anything. The customer is created on the first
       // checkout instead, which the plugin's upgrade path already does.

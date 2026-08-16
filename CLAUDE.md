@@ -65,6 +65,46 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 - 目录在 `src/lib/plans.ts`（两端共用，跟 `models.ts` 同理）：`plan.name` 同时是 Stripe 的 plan 名和它创建出来的 `organization.type`。里面的 `priceId` 是**可读的占位串**而不是长得像真 id 的假 id——换真账号时要改的就是这两行。
 - 代价：`stripe` SDK 让 Worker 打包后 gzip 多了约 590KB（现在总计约 2.2MB，免费版上限 3MB）。
 
+### 用量计费与组织钱包（`src/lib/money.ts`、`pricing.ts`、`credits.ts`、`src/server/billing/*`、`src/server/generation/metering.ts`）
+
+买组织卖的是席位，这一层卖的是**每一次模型调用**。两者共用一个 Stripe client、一个 webhook 端点和一种货币，此外没有关系。
+
+- **钱包挂在组织上**：项目、画布、资产全是组织范围的，那么生成它们的账单也该落在同一个租户，而不是落在恰好按了按钮的那个人身上。每个人都有一个 private 组织，所以单人用户的"给自己充值"仍然只是一个钱包的事。
+- **但付款人始终是人**：Stripe 的 customer 是 `user.stripeCustomerId`（`customerType: "user"`），卡是某个人的。所以 `credit_topup` 同时记两列——`organizationId` 是被充值的，`userId` 是被扣款的。账本和计量表也各记一个 `userId`，那是**归属而非授权**：能花谁的钱只由 `organizationId` 决定。
+- **两种权限，沿用既有那条线**：**花钱**是任何成员的事（走画布，`getProjectAccess` 已经验过成员身份；只有 owner 能生成的团队不叫团队）；**充值和看流水**是 owner/admin 的事，跟席位订阅同一套 `BILLING_ROLES`，同一条道理——成员用已经买好的，不改买什么。流水本身也是一份名册，它说得出谁花了多少。余额则对所有成员可见，因为那是每一次"余额不足"背后的那个数。这道闸在 `lib/credits.ts` 的 `requireBillingAccess` 里，**不是只藏了 UI**：几个 server fn 都是裸 HTTP 端点。
+- **组织范围永远取自会话的 `activeOrganizationId` 并重查 `member`**，跟别处一样；组织 id 只进查询键（`["credits", orgId, …]`），拦住切组织后画出上一个租户的余额。
+- **一切金额是整数微美元（1e-6 USD）**，见 `money.ts`。不用美分：一次语音调用就是零点几美分，美分做单位会把每一次都四舍五入成 0 或 1 分。不用 `numeric`：钱包安全的前提是 `balance = balance - x` 在**一条语句里**精确完成，小数类型会诱使某处 `parseFloat`。只有贴着 Stripe 的那一列（`credit_topup.chargeAmount`）用**美分**，换算只发生在那一个边界上，且 `microToCents` 向上取整——把该收的钱换成要收的钱，往下取整等于每笔带零头的订单白送一分。
+- **用美元还有一个结构性好处**：AI Gateway 就是按美元计费的，所以 `usage_event` 里"卖了多少"和"成本多少"是同一货币的两列，毛利是一次减法，不需要这个应用去发明并维护一个汇率。
+- **价格写在模型条目上**（`models.ts` 的 `price`），跟 `gateway` 挨着，理由一模一样：「这个模型存在／能跑／值多少钱」是同一件事的三个方面，价格表另立一张就是第四张要对账的表，而它对不上的后果是账单。两者必须成对出现，由 `assertPricedGateway` 在 dev 下启动即校验——只有 `gateway` 没 `price` 会真跑且不计费（计量漏了个洞），只有 `price` 没 `gateway` 会报价之后返回替身文件（另一个方向的谎）。它还顺手挡住「music 模型带 gateway id」，因为 `getProvider` 无论如何都不会把 music 路由过去。
+- **报价是两端共用的纯函数**（`quoteGeneration`）。服务端多的那个输入只有一个——有没有配 `AI_GATEWAY_API_KEY`——所以它搭钱包查询（`walletQueryOptions`）的顺风车发给浏览器，而不是让客户端猜。**报价永远不上行**：请求体里的价格就是调用方自己定的价格。
+- 计价单位一个模态一种：图片按张（**故意不按分辨率档位**——那个档位根本没接到任何 provider，按它收费等于为一个没离开过本应用的参数收费）、视频按秒 × 分辨率倍率（视频的分辨率是真发出去的）、语音按千字符（不足一千按一千，否则单次价格小到四舍五入没了）。倍率表在 `pricing.ts`，是**政策数字**不是测量值；`models.ts` 里的价格同理。
+- **命名调用也是一次网关调用**，所以每次可计费生成额外收一笔固定的 `NAMING_FEE`。固定而不是按 token：报价必须在发请求**之前**精确，而没发生的回复数不出 token。落到 `sampleProvider` 的生成不收这笔——那次调用照样花我们的钱，但为一个替身文件收费是更坏的那个错误。
+- **扣费在认领之后、第一个字节出去之前**（`runGeneration`）。认领之后，否则两个客户端抢同一行会各扣一次而只出一个文件；provider 之前，否则钱包形同虚设——余额一美元的组织可以同时发五十次生成，每次进来时余额都是正的。
+- 扣费本身是**一条带条件的 update**（`where balance >= amount`）加同事务的账本插入，由 Postgres 在它本来就要拿的行锁下决定这笔付不付得起；输的那次拿到零行，而不是一个事后才发现的负数。
+- **幂等靠数据库而不是靠记得先查**：`credit_transaction` 上 (`kind`, `referenceId`) 的部分唯一索引，让重投的 webhook、双击的重试、重复的退款各自只落一次。⚠ 判断这个冲突必须**沿着 `cause` 链走**：drizzle 不会原样抛驱动的错，而是包一层 `DrizzleQueryError`，顶层读 `code` 永远是 `undefined`——写错了看起来完全正确，然后把每一次 Stripe 重投变成 500。
+- **失败即退款**，金额从那笔扣费行上读回来而不是重新报价：两次之间目录可能已经改过价，退得对不上的退款比不退更糟，它会凭空造出或销毁额度。唯一不退的是「生成成功但节点已被删」——模型跑了、厂商收了钱，退它等于把"生成完立刻删节点"变成免费通道。
+- **`usage_event` 和账本是两张表，别合**：一次生成是**一笔**扣费和**两次**网关调用（媒体 + 命名），而落到替身 provider 的生成是一笔零元扣费和零次调用。合成一张要么凭空造出零元的资金流水，要么直接丢掉命名那次。`chargedAmount` 和 `upstreamCost` 并排放着，两列一减就是毛利。
+- 网关报的 cost 藏在 `providerMetadata` 里，SDK 只负责原样透传、没有 schema，各模态还不一定都有。`upstreamCost` 因此**可空**：读不到就是 null，不是 0——报表有洞是诚实的，每个洞里塞个零不是。
+- **失败路径上那条命名的计量行必须交给 `waitUntil`**（`meterInBackground`）。裸 `void promise` 在 Workers 上不行：isolate 答完就可以不再执行，那行会时有时无，而这是计量最坏的一种行为。不能改成 await——命名自己有 20 秒的耐心，不该拿它拖住一次已经失败的生成。
+- **余额不足是提前说的**，跟席位满同一个道理：真正的检查在离按钮很远的地方，"点了没反应"是最差的知情方式。`generate()` 在建节点**之前**问一次，不够就 toast 并**返回 false**——`onSubmit` 返回 false 时 composer 不清空草稿，因为拒绝不该顺手把人刚写的提示词也收走。服务端仍然是权威（缓存会旧，同组织的另一个人会花掉同一笔钱），它拒绝时那一次会在画布上留一个失败节点；但 `useGenerations` 在 `finally` 里 invalidate 了 `["credits"]`，所以下一次按下就会被客户端拦住并给出人话——这条链是自我纠正的。
+- **发送按钮旁边常驻价格**，因为钱是按次花的，决定发生在那里。`formatUsd` 因此最多显示四位小数：生成价是模型价加那笔命名费，两位小数会把 $0.091 印成 $0.09 然后扣 $0.091——屏幕上的数和实际扣的数不一样，而这恰恰是唯一不能不一致的那块屏幕。整分的金额不受影响，$100 照样是 $100.00。
+- **充值不走 better-auth 的 stripe 插件**：那个插件只卖订阅，建 session 时把 `mode: "subscription"` 写死。充值是一次性付款，用同一个 client 自己建 session，并且结算在 **`payment_intent.succeeded`** 上——这是插件会直接丢给 `onEvent`、不试图解读的那类事件。选它而不是 `checkout.session.completed` 是因为后者的处理函数会对任何非 setup 的完成结账去读 `session.subscription`，一次性付款上那是 null，它自己的 try/catch 能扛住（照返 200），但每笔充值要白搭一次注定 404 的 Stripe 往返和一行 error 日志。
+- `onEvent` 抛错会让端点返 **非 200**（跟 `onSubscriptionComplete` 只 log 相反），这对发放额度正是想要的方向：Stripe 会重投，而 `applyPaidTopup` 幂等。
+- **入账金额只认 `credit_topup` 那一行**，绝不认事件里的数字：事件说的是收了多少（含手续费），入账的是买了多少。拿付款额去入账等于把手续费当额度还给所有人。
+- 手续费 5%，**是「到账额的 5%」而不是「收款额的 5%」**：充 $100 收 $105，$5 占 $105 是 4.76%。`credit_topup.feeRateBps` 在下单时把当时的费率盖章存下，之后改公开费率也改不了旧单。
+- 四张表的外键一律 `restrict` 指向 organization，跟 `asset.organizationId` 同一个理由：cascade 会把有人付过钱的余额悄悄烧掉。删一个还有钱的组织必须是先清空钱包的显式动作，在那之前 Postgres 直接拒绝——响亮的失败好过安静的失败。
+- **组织可以自带 AI Gateway key**（`server/generation/gateway-key.ts` + `gateway.ts` 的 `resolveGateway`）。这首先是一个**计费**决定而不是技术决定：自带 key 的组织由 Vercel 直接开票，所以这边就**不再从余额扣费**——两边都收就是为一次生成收两遍钱。
+- key 因此绑在**组织**上、由 owner/admin 设置，跟钱包同一层。挂在人身上的话，同一个组织里 A 的卡会悄悄替 B 的生成付账，而 A 事后连是哪几次都说不清。
+- **优先级写死、没有第二个开关**：`resolveGateway` 先查组织的 key，没有才用 `env.AI_GATEWAY_API_KEY`。"用我的 key"由"存在一把 key"表达，而不是由一个可以跟它对不上的 boolean 表达。
+- **一次生成只解析一次**，结果同时喂给媒体调用、命名调用和报价。否则一次生成的两半可能跑在两把不同的 key 上，账也就对不起来了。
+- key **加密后入库**（AES-GCM，密钥由 `BETTER_AUTH_SECRET` 经 HKDF 派生，`info` 串区分用途）。这是别人账户的活凭证，一份 dump、一条被记下的查询、一次恢复到不那么小心的地方的备份，都不该足以花掉他们的钱。⚠ **轮换 `BETTER_AUTH_SECRET` 会让已存的 key 全部解不开**：解不开时按"没有 key"处理并 log,组织回落到系统 key 而不是每次生成都失败，设置页仍显示装着一把——那正是提示人重新粘一次的地方。真要避免这条，就给它一个自己的 secret。
+- **key 只往一个方向走**：上行一次，永不回传。所有读路径答的是最后四位加一个时间戳（`preview` 列是明文存的，够认出是哪一把、不够用）。没有"显示 key"、没有就地编辑——能被显示的凭证最终会出现在截图、工单或 bug 报告里。
+- **存之前先验**（`getCredits()`，最便宜的一个鉴权调用，什么都不生成）。验证失败不写库，组织留在原来那把 key 上；一把没验过的 key 会把整个组织的生成变成原因不在屏幕上的失败。验证的报错也不透传——它来自一个手里攥着凭证的调用栈。
+- 校验只查长度不查前缀：`vck_` 是今天的样子，照它写正则会在前缀一变时开始拒绝合法的 key，而 Gateway 自己才是"这把 key 行不行"的权威。
+- **`usage_event.keySource` 单独记一列**，不从 `chargedAmount` 反推：0 有两个意思——跑在自己 key 上，和扣了又退了——而用量报表正是有人会去问这个区别的地方。报表按它分组，两种行的"收了多少"混在一起算是个没有指称的数。
+
+- `fake-stripe.ts` 相应长出了三样东西：`price_data` 内联价格（充值金额只为这一单存在，为每个面额建一个 Price 等于把费率表放两处）、`mode: "payment"` 的结算（产出 `payment_intent`，带 `amount_received` 而不只是 `amount`——那才是处理方该读的字段）、以及按 `mode` 分流的假结账页地址。
+
 ### 账号与密码（`routes/login|signup|forgot-password|reset-password|email-verified`）
 
 签出状态的五个页面共用 `components/block/auth-shell.tsx`：它们在 `_auth` 之外，也在应用那套只有暗色的皮肤之外——是陌生人看到的第一屏，所以跟随系统主题，而不是替他决定。样式常量抽出来是因为五个页面本来要各抄一份，那正是某个没人再看第二眼的页面上焦点环变成另一种蓝的方式。
@@ -122,6 +162,7 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 - **新节点落点由 `canvas-placement.ts` 定**：`freePosition` 的候选取自真实邻居的边（共边、共中线、隔一个 gutter 并排），不是格点；锚点自身也在候选里，所以视野中央本来就空就地不动，不为了对齐而搬家。**没有"一键整理"**：全局重排会把别人正在看的地方从他们眼前搬走，落点与吸附已经让每个节点在放下的那一刻就是对齐的。
 - **视口刻意不入共享文档**：它是唯一应该因人而异的画布状态，落 localStorage（`producer:canvas:<projectId>:viewport`），mount 后再恢复而不是走 `defaultViewport`——SSR 那侧没有 storage 可读。
 - **空格键是"移动模式"**（`useKeyPress("Space")`），平移与节点拖拽都等它，误拖推不动别人的排版。按下时要对聚焦在 button/a 上的空格 `preventDefault`（capture 阶段自己挂监听，`useKeyPress` 对 BUTTON/A 特意跳过 preventDefault 且没有开关）：否则"点完工具栏按钮 → 按住空格拖节点 → 松手"会把那次点击再触发一遍。**不能改用 `blur()` 摘焦点**——浏览器是在 keydown *派发之后*才把按钮标记 `:active`，比任何 handler/effect 都晚，摘了焦点等于把 `:active` 留在一个收不到 keyup 的元素上，`active:blur-[1.5px]` 于是永久糊着，只有在它上面重新按一次鼠标才复位。
+- **草稿只在被接受时清空**：`onSubmit` 返回 `false` 表示这次按下被拒了（今天唯一的拒法是余额不够），composer 就把编辑器里的东西原样留着。清掉等于拿人刚写的提示词当拒绝的手续费——而那正是他充完值马上要再用一次的东西。
 - **提示框可以收起来**（工具栏上的 `ComposerToggle`）。它是**平移出画面而不是卸载**：编辑器只创建一次、手里攥着没写完的 prompt，卸载等于把草稿吃掉，再回来还是空的。`translate-y-full` 恰好是它自身连下边距的高度，无需估算；React Flow 的容器会裁掉溢出，所以外面不会多出滚动条。过渡写 `transition-[translate,opacity]` 而**不是** `transform`——Tailwind v4 的 `translate-y-*` 写的是独立的 `translate` 属性，盯 `transform` 等于什么都没盯上，面板会直接跳过去只剩透明度在渐变（菜单那边的 `transition-[opacity,scale]` 是同一个坑）。`inert` 是"藏起来"真正生效的那一半：opacity 为 0 的元素照样吃点击、照样占一个 tab 位。
 - 节点靠三个 context 拿它不该写进文档的东西：`DragModeContext`（按键级状态，写进每个节点的 data 等于一次按键重写整张图）、`NodeActionsContext`（`canRetry`/`retry` 描述的是**这个 tab 的能力**，不是结果的属性）、`RetryContext`（同一个 retry，已绑定到当前节点，省得深处的失败提示还要接 id 和 data）。
 - **画布上的连线只有一种含义：被参考的节点 → 由它生成的节点**（`reference-edge.tsx`）。提交时把 `referenceAssetIds`（`@` 提及给的是**资产** id）对到画布节点，与新节点同一个 Yjs 事务写进 `edges`——同一个文件被两个节点显示时两条都画，`@` 每个文件只给一次候选，挑其中一个当"真正的"来源没有依据。删节点时 React Flow 自己会把连着的边一并发成 `remove`，走 `applyEdgesChange` 落到文档。
