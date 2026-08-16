@@ -50,6 +50,27 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 - **`createServerFn` 是裸 HTTP 端点，`_auth` 路由守卫管不到它**，每个 handler 必须自己解析会话。
 - 库表 id 一律小写 uuidv7；所有接客户端 id 的入口共用 `src/lib/ids.ts` 的 `canonicalId`，查库前就拒掉非小写/非 uuid 的 id（DO 房间名按字节区分大小写，大写 URL 会分叉出第二个画布，且各入口对同一条 URL 必须给同一个答案）。画布节点 id 是例外：`crypto.randomUUID()`（v4），只作 Yjs key，不进库表也不进房间名。
 
+### 账号与密码（`routes/login|signup|forgot-password|reset-password|email-verified`）
+
+签出状态的五个页面共用 `components/block/auth-shell.tsx`：它们在 `_auth` 之外，也在应用那套只有暗色的皮肤之外——是陌生人看到的第一屏，所以跟随系统主题，而不是替他决定。样式常量抽出来是因为五个页面本来要各抄一份，那正是某个没人再看第二眼的页面上焦点环变成另一种蓝的方式。
+
+- **三条进门的路，两条自带验证**：密码、邮箱验证码（`emailOTP`）、登录链接（`magicLink`），外加 Google。
+- **`requireEmailVerification: true`**：邮箱没验证就不能用**密码**登录。它只管 email/password 那一条路——`requireEmailVerification` 在整个 better-auth 里只被 `sign-in.mjs:312` 读一次，社交登录走 `link-account.mjs`，`emailVerified` 直接抄 provider 的（Google 给 true），**从不经过那道闸**。所以"社交账号免验证"不需要写任何代码，本来就是这样。
+- 那道闸堵的是真窟窿：谁都能拿 `ceo@target.com` 注册而不必读得到那个邮箱，而一个未验证账号是可以被塞进一张本该发给地址真主人的组织邀请的——邀请系统正是拿 `emailVerified` 当"这地址真是他的"的证据。
+- **OTP 和魔法链接本身就是验证**：收到码/链接再拿回来，证明的和验证信证明的是同一件事——这个人读得到这个邮箱。better-auth 因此在这两条路上直接写 `emailVerified: true`：**全新地址会被就地建号且已验证**（连 `credential` account 都不建，因为从没设过密码），已存在的未验证账号则被就地升级，升级前先 `revokeUnprovenAccountAccess` 掐掉它原有的会话——万一是别人先抢注了这个地址却从没证明过。
+- 于是"验证邮箱"从一件差事变成了登录的副作用，也给**被验证要求锁在门外的账号一条自救路**：改用验证码登录一次就解开了，不需要工单。（`databaseHooks` 照常触发，所以这两条路建出来的账号一样会自动获得 private 组织。）
+- **`overrideDefaultEmailVerification` 故意不开**：密码注册仍旧走它自己的验证**链接**，OTP 和魔法链接是**多出来的两扇门**而不是替换掉那一扇。
+- 验证码信的 subject 里带码（`123456 is your Producer sign-in code`），这不是抄格式：新发送域会进垃圾箱，而垃圾箱列表显示的是 subject——**不打开邮件就能读到的码**能活下来，链接不能。代价是锁屏通知也会显示它，这是登录码普遍接受的取舍，也是它 10 分钟过期、一次性、错三次即作废的原因。
+- **没有人会拿到空名字，也没有表单问过名字**：注册页只要邮箱和密码，无密码那两扇门只要一个码或一个链接。`databaseHooks.user.create.before` 用 `nameFromEmail` 把空名字补上——`1234@xxx.com` 的名字就是 `1234`，私有组织就叫 `1234's Organization`。它**只填空的**：Google 和 SSO 给的真名字一律不动。各处显示名字的回退链（`AccountMenu`、`privateOrganizationName`）保留着当第二道防线，因为这个 hook 之前建的老账号仍可能是空的。
+- **`nameFromEmail` 会剥掉 plus 标签，但绝不碰点**（`lib/organization.ts`，名字、组织名、slug 三处共用）。`foo+producer@x.com` 的名字是 `foo`：那个标签是收件人给自己留的记号，不比域名更算是他的名字，留着就会变成第一屏上的 `foo+producer's Organization`。**只影响显示**——`user.email` 一个字符都不动，因为那串东西是投递地址，也是邀请比对的依据。点则相反：Gmail 忽略用户名里的点，但只有 Gmail 这样，对多数域名 `zhang.san@` 和 `zhangsan@` 是两个人，"规范化"等于把两个陌生人并成一个。
+- 开这个开关顺带把注册也变严了：better-auth 对**已存在的邮箱**改用通用响应（还会照样 hash 一遍密码来抹平耗时差），所以注册表单不再能用来试探谁有账号。注册页那句"检查你的邮箱"对新地址和已占用地址是同一句，这是有意的。
+- `requireEmailVerification` 下**注册不会自动登录**（better-auth 自己把 `autoSignIn` 跳过），所以注册页提交后不导航，直接换成"去收信"。
+- `sendOnSignUp` 和 `sendOnSignIn` 都开：前者让注册自成闭环，后者是**没收到第一封的人的唯一活路**——否则未验证用户在登录处被拒，却没有任何地方能再要一封。登录页因此把 `EMAIL_NOT_VERIFIED` 当作"已经给你重发了"来说，而不是当错误。
+- `autoSignInAfterVerification`：那个链接同时证明了地址是他的、人也在，验证完再要一次密码是多一步却不多一道检查。
+- **`/email-verified` 和 `/reset-password` 都必须在 `_auth` 之外**，因为 token 失效时 better-auth 会带 `?error=` 重定向回同一个 URL——放在守卫后面，失败就变成一次静默弹回登录页。两个路径写在 `lib/session.ts` 的常量里：它们是"请求邮件时传的 option"和"几天后在另一台设备上被点开的路由"之间的约定，两头永远见不到面。
+- 重置密码 `revokeSessionsOnPasswordReset: true` 并在完成后发一封**没有链接**的通知信。没链接是刻意的：这封信正是钓鱼邮件的标准形状，而对它的正确反应是自己打开应用，不是点邮件里的 URL。
+- 忘记密码页**不挡已登录的人**（不像登录/注册页有 `beforeLoad` 弹开）：人可以在这台设备上登录着，同时忘了另一台上要用的密码。
+
 ### 事务邮件（`src/server/email/*`）
 
 发六封信，都是有人在等的东西：组织邀请、地址验证、登录验证码、登录链接、密码重置，以及密码已被修改的通知。**不是营销通道**——退信会赔掉发送域的声誉，而赔掉的是这几封信的送达率。

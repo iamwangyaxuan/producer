@@ -6,6 +6,20 @@ import { getRequest } from "@tanstack/react-start/server";
 import { auth } from "./auth";
 import { authClient } from "./auth-client";
 
+/**
+ * Where better-auth's emailed links drop the browser.
+ *
+ * They are constants rather than strings written at each call site because each
+ * one is an agreement between two places that never see each other: the option
+ * passed when the mail is *requested*, and the route that has to exist when the
+ * link is *followed*, possibly days later on another device. Both pages below
+ * handle failure as well as success — a dead token comes back to the same URL
+ * with `?error=`, so neither may sit behind the `_auth` guard.
+ */
+export const VERIFIED_CALLBACK_URL = "/email-verified";
+
+export const RESET_PASSWORD_URL = "/reset-password";
+
 export const fetchSession = createServerFn({ method: "GET" }).handler(async () => {
   return await auth.api.getSession({ headers: getRequest().headers });
 });

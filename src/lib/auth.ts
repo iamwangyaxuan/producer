@@ -3,11 +3,19 @@ import { sso } from "@better-auth/sso";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
-import { organization } from "better-auth/plugins";
+import { emailOTP, magicLink, organization } from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { env } from "cloudflare:workers";
 
 import { getDB, schema } from "#/db";
+import { sendEmail } from "#/server/email/send";
+import {
+  passwordChangedEmail,
+  passwordResetEmail,
+  signInCodeEmail,
+  signInLinkEmail,
+  verificationEmail
+} from "#/server/email/templates";
 
 import {
   activateForNewUser,
@@ -16,7 +24,8 @@ import {
   ensurePrivateOrganization,
   ensurePrivateOrganizationById,
   hasFreeSeat,
-  isCreatableType
+  isCreatableType,
+  nameFromEmail
 } from "./organization";
 
 /** The type a `/organization/create` call gets when it does not ask for one. */
@@ -60,7 +69,66 @@ export const auth = betterAuth({
     }
   },
   emailAndPassword: {
-    enabled: true
+    enabled: true,
+    /**
+     * An address has to be proved before it can be signed in with.
+     *
+     * Google accounts arrive already verified, so this only governs the
+     * email/password path — and there it closes a real hole: nothing stops
+     * somebody registering `ceo@target.com` without reading that mailbox, and
+     * an unverified account is one that can be handed an organization
+     * invitation meant for the real owner of the address.
+     *
+     * Turning this on also hardens sign up itself, which is worth knowing:
+     * better-auth switches to a generic response for an address that already
+     * exists, so the form can no longer be used to find out who has an account.
+     */
+    requireEmailVerification: true,
+    /**
+     * A password reset is what somebody does when they think the old one is
+     * compromised, so every other session goes with it. The cost is being
+     * signed out on your other devices; the alternative is leaving whoever
+     * prompted the reset still signed in.
+     */
+    revokeSessionsOnPasswordReset: true,
+    sendResetPassword: async ({ user, url }) => {
+      const sent = await sendEmail({ to: user.email, ...passwordResetEmail({ url }) });
+
+      // The endpoint answers "if this email exists, check your inbox" either
+      // way — deliberately, so it cannot be used to enumerate accounts — which
+      // means a failure here is invisible to the person waiting for the link.
+      if (!sent) console.error(`password reset email for ${user.id} did not send`);
+    },
+    /**
+     * The account has just changed hands as far as the old password is
+     * concerned, and the person who owns the address deserves to hear about it
+     * whether or not they were the one who did it. Carries no link — see the
+     * template for why.
+     */
+    onPasswordReset: async ({ user }) => {
+      await sendEmail({ to: user.email, ...passwordChangedEmail() });
+    }
+  },
+  emailVerification: {
+    /**
+     * Both entry points send it. `sendOnSignUp` is what makes registration
+     * complete on its own; `sendOnSignIn` is what rescues the account that
+     * never got the first one — without it, an unverified user would be
+     * refused at sign in with no way to ask for another link.
+     */
+    sendOnSignUp: true,
+    sendOnSignIn: true,
+    /**
+     * The link is proof of both things at once — that the address is theirs,
+     * and that they are the one holding it — so making them type the password
+     * again immediately afterwards adds a step without adding a check.
+     */
+    autoSignInAfterVerification: true,
+    sendVerificationEmail: async ({ user, url }) => {
+      const sent = await sendEmail({ to: user.email, ...verificationEmail({ url }) });
+
+      if (!sent) console.error(`verification email for ${user.id} did not send`);
+    }
   },
   socialProviders: {
     google: {
@@ -71,6 +139,27 @@ export const auth = betterAuth({
   databaseHooks: {
     user: {
       create: {
+        /**
+         * Nobody gets a blank name.
+         *
+         * No form here asks for one: sign up takes an address and a password,
+         * and the passwordless doors take a code or a link. Left alone,
+         * better-auth writes `name: ""` and every screen downstream falls back
+         * to printing the raw address. `nameFromEmail` is what a person would
+         * have typed anyway — it makes the private organization read as
+         * `1234's Organization` instead of `1234@xxx.com's Organization`.
+         *
+         * Only fills a blank: Google and SSO supply a real name, and a guess
+         * derived from an address should never overwrite one.
+         */
+        before: async (user) => {
+          if (user.name.trim()) return;
+
+          const derived = nameFromEmail(user.email).trim();
+          if (!derived) return;
+
+          return { data: { ...user, name: derived } };
+        },
         // Every new user — whether they signed up with Google, email/password
         // or SSO — gets their own private organization.
         after: async (user, ctx) => {
@@ -101,6 +190,49 @@ export const auth = betterAuth({
     }
   },
   plugins: [
+    /**
+     * The two passwordless ways in, and the reason `requireEmailVerification`
+     * above is livable.
+     *
+     * Both of them *are* the verification. Receiving a code or a link and
+     * coming back with it proves the same thing a verification email proves —
+     * that this person reads this mailbox — so better-auth writes
+     * `emailVerified: true` on the way through: a brand new address is created
+     * already verified, and an existing unverified account is upgraded (after
+     * `revokeUnprovenAccountAccess` kills whatever sessions it had, in case
+     * somebody else registered the address first and never proved it).
+     *
+     * That turns "verify your email" from a chore into a side effect of signing
+     * in, and it gives an account locked out by the verification requirement a
+     * way to rescue itself without a support ticket.
+     *
+     * `overrideDefaultEmailVerification` is deliberately left off: password
+     * sign-up keeps its own verification *link*, and these two are additional
+     * doors rather than a replacement for that one.
+     */
+    emailOTP({
+      otpLength: 6,
+      // Long enough to go and find the mail — which on a cold sending domain
+      // may mean digging it out of a spam folder — and short enough that a code
+      // read off a lock screen is stale by the time anyone acts on it.
+      expiresIn: 600,
+      // After three wrong tries the code is burned rather than left to be
+      // guessed; a fresh one is one button away.
+      allowedAttempts: 3,
+      sendVerificationOTP: async ({ email, otp }) => {
+        const sent = await sendEmail({ to: email, ...signInCodeEmail({ otp }) });
+
+        if (!sent) console.error(`sign-in code for ${email} did not send`);
+      }
+    }),
+    magicLink({
+      expiresIn: 600,
+      sendMagicLink: async ({ email, url }) => {
+        const sent = await sendEmail({ to: email, ...signInLinkEmail({ url }) });
+
+        if (!sent) console.error(`sign-in link for ${email} did not send`);
+      }
+    }),
     organization({
       // These are what make the columns visible to better-auth at all: the
       // adapter builds every insert by walking the declared fields, so an

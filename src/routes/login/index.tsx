@@ -1,16 +1,26 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
 import { useId, useState } from "react";
 import type { FormEvent } from "react";
 import * as z from "zod";
 
+import {
+  AuthShell,
+  INPUT_CLASS,
+  LABEL_CLASS,
+  LINK_CLASS,
+  SECONDARY_CLASS,
+  SUBMIT_CLASS
+} from "#/components/block/auth-shell";
 import { authClient } from "#/lib/auth-client";
-import { sessionQueryOptions } from "#/lib/session";
+import { sessionQueryOptions, VERIFIED_CALLBACK_URL } from "#/lib/session";
 
 const DEFAULT_REDIRECT = "/projects";
 
 const searchSchema = z.object({
-  redirect: z.string().optional()
+  redirect: z.string().optional(),
+  /** Written by the magic-link endpoint when its token is dead. */
+  error: z.string().optional()
 });
 
 /**
@@ -34,72 +44,29 @@ export const Route = createFileRoute("/login/")({
 });
 
 /**
- * Which of the two sign in paths is waiting on the server. One state rather than
- * a boolean per button: only one request may be in flight, and the buttons have
- * different pending labels — a shared boolean would put "Redirecting…" on the
- * Google button while it is the form that is busy.
+ * Which way in is on screen. Password is the default because it is the one that
+ * needs no round trip through a mailbox; the other two are offered underneath
+ * rather than as equal tabs, so the common case stays one form.
  */
-type PendingMethod = "email" | "google";
-
-const LABEL_CLASS = "block text-sm font-medium text-neutral-700 dark:text-neutral-300";
+type Method = "password" | "code" | "link";
 
 /**
- * `read-only` rather than `disabled` while a request is in flight, for the
- * reason the buttons below use `aria-disabled`: a disabled control drops focus,
- * which leaves a keyboard or screen reader user back at the top of the document
- * at the exact moment there is something to tell them.
- *
- * Deliberately without `transition`. Tailwind's bare one covers `border-color`,
- * and these two fields sit one above the other: moving between them would fade
- * the border of the field being left out over 150ms while the border of the
- * field being entered faded in, so for that moment the *old* field is the
- * brighter of the two and the focus reads as lagging a step behind the pointer.
- * A focus indicator is the one thing that has to land at once.
+ * Which request is in flight. One state rather than a boolean per control: only
+ * one may be running, and each has its own pending label — a shared boolean
+ * would put "Redirecting…" on the Google button while it is the form that is
+ * busy.
  */
-const INPUT_CLASS = [
-  "mt-1.5 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2",
-  "text-sm text-neutral-900 outline-hidden placeholder:text-neutral-400",
-  "focus-visible:border-neutral-900 read-only:opacity-60",
-  "dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-50",
-  "dark:placeholder:text-neutral-500 dark:focus-visible:border-neutral-400"
-].join(" ");
+type Pending = "password" | "google" | "send-code" | "code" | "send-link";
 
 /**
- * `aria-disabled` plus `pointer-events-none` instead of the `disabled`
- * attribute: the button keeps its focus while the request is in flight, and the
- * submit handler guards the keyboard path that a non-disabled submit button
- * still leaves open.
+ * better-auth's code for "the password was right, but this address has never
+ * been confirmed". It is not a failure in the way a wrong password is: a fresh
+ * verification link has just gone out, and the two passwordless methods below
+ * would also settle it, because both of them verify on the way through.
  */
-const BUTTON_BASE_CLASS = [
-  "flex w-full items-center justify-center gap-3 rounded-lg px-4 py-2.5",
-  // `transition-colors`, the way the shared button does it, rather than the bare
-  // `transition`: that one also lists `pointer-events`, a discrete property that
-  // flips half way through — the row below would keep taking clicks for 75ms
-  // after it had been told to stop.
-  "text-sm font-medium transition-colors",
-  // The one colour here that does not come in a light and a dark flavour: the
-  // focus ring is the same blue on both, so it stays the single thing on screen
-  // that always means "this is where the keyboard is" instead of borrowing each
-  // theme's own foreground and having to be told apart from it.
-  //
-  // Unconditional, not behind `focus-visible:` — `transition-colors` above
-  // covers `outline-color`, and a ring that only picks up its colour on focus
-  // animates there from `currentColor` while the reader watches.
-  "outline-blue-500 focus-visible:outline-2 focus-visible:outline-offset-2",
-  "aria-disabled:pointer-events-none aria-disabled:opacity-60"
-].join(" ");
+const EMAIL_NOT_VERIFIED = "EMAIL_NOT_VERIFIED";
 
-const SUBMIT_CLASS = [
-  BUTTON_BASE_CLASS,
-  "bg-neutral-900 text-white hover:bg-neutral-800",
-  "dark:bg-neutral-50 dark:text-neutral-900 dark:hover:bg-white"
-].join(" ");
-
-const GOOGLE_CLASS = [
-  BUTTON_BASE_CLASS,
-  "border border-neutral-300 bg-white text-neutral-900 hover:bg-neutral-50",
-  "dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-50 dark:hover:bg-neutral-800"
-].join(" ");
+const METHOD_LINK_CLASS = `${LINK_CLASS} text-xs font-normal`;
 
 function RouteComponent() {
   const search = Route.useSearch();
@@ -107,11 +74,36 @@ function RouteComponent() {
   const queryClient = useQueryClient();
   const emailId = useId();
   const passwordId = useId();
+  const codeId = useId();
 
+  const [method, setMethod] = useState<Method>("password");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState<PendingMethod | null>(null);
+  const [code, setCode] = useState("");
+  const [error, setError] = useState<string | null>(
+    // The one error that arrives in the URL rather than from a request: a magic
+    // link that had already been used, or had expired.
+    search.error ? "That sign-in link has expired. Ask for a new one below." : null
+  );
+  const [unverified, setUnverified] = useState<string | null>(null);
+  /** Set once a code has been mailed, which is what swaps in the code field. */
+  const [codeSent, setCodeSent] = useState(false);
+  /** Set once a link has been mailed; the form is done at that point. */
+  const [linkSent, setLinkSent] = useState<string | null>(null);
+  const [pending, setPending] = useState<Pending | null>(null);
+
+  const address = email.trim().toLowerCase();
+
+  function choose(next: Method) {
+    setMethod(next);
+    // Each method reports its own outcome, so nothing from the previous one
+    // should still be on screen under a form it does not belong to.
+    setError(null);
+    setUnverified(null);
+    setCodeSent(false);
+    setLinkSent(null);
+    setCode("");
+  }
 
   /**
    * The credentials are accepted and the session cookie is already set by the
@@ -137,27 +129,37 @@ function RouteComponent() {
     await navigate({ href: safeRedirect(search.redirect), replace: true });
   }
 
-  async function signInWithEmail(event: FormEvent<HTMLFormElement>) {
+  async function signInWithPassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    // Neither button is clickable while a request is in flight, but pressing
-    // Enter in a field submits the form without going through one.
+    // No control is clickable while a request is in flight, but pressing Enter
+    // in a field submits the form without going through one.
     if (pending) return;
 
     setError(null);
-    setPending("email");
+    setUnverified(null);
+    setPending("password");
 
     const { error: signInError } = await authClient.signIn.email({
       // A trailing space in an address is a typo, not part of it. The password is
       // passed through untouched — whitespace there is a character like any other.
       email: email.trim(),
-      password
+      password,
+      // Not used when the sign in succeeds; it is where the *verification* link
+      // will point if this attempt is refused for an unconfirmed address, since
+      // `sendOnSignIn` mails one from inside this same request.
+      callbackURL: VERIFIED_CALLBACK_URL
     });
 
     if (signInError) {
-      // better-auth answers an unknown address and a wrong password with the same
-      // message, so showing it verbatim cannot be used to enumerate accounts.
-      setError(signInError.message ?? "Could not sign you in. Please try again.");
+      if (signInError.code === EMAIL_NOT_VERIFIED) {
+        setUnverified(email.trim());
+      } else {
+        // better-auth answers an unknown address and a wrong password with the same
+        // message, so showing it verbatim cannot be used to enumerate accounts.
+        setError(signInError.message ?? "Could not sign you in. Please try again.");
+      }
+
       setPending(null);
 
       return;
@@ -168,10 +170,92 @@ function RouteComponent() {
     await completeSignIn();
   }
 
+  async function sendCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (pending || !address) return;
+
+    setError(null);
+    setPending("send-code");
+
+    const { error: sendError } = await authClient.emailOtp.sendVerificationOtp({
+      email: address,
+      type: "sign-in"
+    });
+
+    if (sendError) {
+      setError(sendError.message ?? "Could not send the code. Please try again.");
+      setPending(null);
+
+      return;
+    }
+
+    setCodeSent(true);
+    setPending(null);
+  }
+
+  async function signInWithCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (pending) return;
+
+    setError(null);
+    setPending("code");
+
+    /**
+     * This is the whole of it: a correct code creates the account if the
+     * address is new, marks it verified either way, and signs in — so somebody
+     * blocked a moment ago for an unverified address is through, and verified,
+     * without a separate errand.
+     */
+    const { error: signInError } = await authClient.signIn.emailOtp({
+      email: address,
+      otp: code.trim()
+    });
+
+    if (signInError) {
+      setError(signInError.message ?? "That code did not work. Ask for a new one.");
+      setPending(null);
+
+      return;
+    }
+
+    await completeSignIn();
+  }
+
+  async function sendLink(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (pending || !address) return;
+
+    setError(null);
+    setPending("send-link");
+
+    const { error: sendError } = await authClient.signIn.magicLink({
+      email: address,
+      // Where the link lands once it has signed the person in, and where it
+      // lands when the token is dead — this page, which reads `?error=` at the
+      // top and says so.
+      callbackURL: safeRedirect(search.redirect),
+      errorCallbackURL: "/login"
+    });
+
+    if (sendError) {
+      setError(sendError.message ?? "Could not send the link. Please try again.");
+      setPending(null);
+
+      return;
+    }
+
+    setLinkSent(address);
+    setPending(null);
+  }
+
   async function signInWithGoogle() {
     if (pending) return;
 
     setError(null);
+    setUnverified(null);
     setPending("google");
 
     // On success better-auth redirects the browser to Google, so the pending
@@ -188,53 +272,75 @@ function RouteComponent() {
     }
   }
 
+  const emailField = (
+    <div>
+      <label htmlFor={emailId} className={LABEL_CLASS}>
+        Email
+      </label>
+      {/* Autofill is off on the password pair. Worth knowing what that does and
+          does not buy: browsers treat `off` as a hint on a sign-in form rather
+          than an instruction, so a built-in password manager may still offer to
+          fill these — nothing in a page can stop that. */}
+      <input
+        id={emailId}
+        type="email"
+        name="email"
+        autoComplete="email"
+        placeholder="you@example.com"
+        required={true}
+        readOnly={pending !== null || codeSent}
+        value={email}
+        onChange={(event) => setEmail(event.target.value)}
+        className={INPUT_CLASS}
+      />
+    </div>
+  );
+
   return (
-    <main className="flex min-h-screen items-center justify-center bg-neutral-50 px-4 dark:bg-neutral-950">
-      <div className="w-full max-w-sm rounded-2xl border border-neutral-200 bg-white p-8 shadow-sm dark:border-neutral-800 dark:bg-neutral-900">
-        <h1 className="text-2xl font-semibold text-neutral-900 dark:text-neutral-50">Sign in</h1>
-        <p className="mt-2 text-sm text-neutral-500 dark:text-neutral-400">
-          Continue to your projects.
-        </p>
-
-        {/* Above the form rather than beside one field: the message belongs to
-            whichever of the two methods was tried, and only one of them has
-            fields at all. */}
-        {error ? (
-          <p
-            role="alert"
-            className="mt-6 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-950/50 dark:text-red-400"
-          >
-            {error}
-          </p>
-        ) : null}
-
-        <form onSubmit={signInWithEmail} className="mt-6 flex flex-col gap-4">
-          <div>
-            <label htmlFor={emailId} className={LABEL_CLASS}>
-              Email
-            </label>
-            {/* Autofill is off on both fields. Worth knowing what that does and
-                does not buy: browsers treat `off` as a hint on a sign-in form
-                rather than an instruction, so a built-in password manager may
-                still offer to fill these — nothing in a page can stop that. */}
-            <input
-              id={emailId}
-              type="email"
-              name="email"
-              autoComplete="off"
-              placeholder="you@example.com"
-              required={true}
-              readOnly={pending !== null}
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              className={INPUT_CLASS}
-            />
-          </div>
+    <AuthShell
+      title="Sign in"
+      description="Continue to your projects."
+      error={error}
+      notice={
+        unverified ? (
+          <>
+            Confirm <strong className="text-neutral-900 dark:text-neutral-50">{unverified}</strong>{" "}
+            before signing in — we just sent a fresh link. Or use a code instead: that signs you in
+            and confirms the address in one step.
+          </>
+        ) : linkSent ? (
+          <>
+            A sign-in link is on its way to{" "}
+            <strong className="text-neutral-900 dark:text-neutral-50">{linkSent}</strong>. It works
+            once and expires in 10 minutes.
+          </>
+        ) : null
+      }
+      footer={
+        <>
+          New here?{" "}
+          <Link to="/signup" className={LINK_CLASS}>
+            Create an account
+          </Link>
+        </>
+      }
+    >
+      {method === "password" ? (
+        <form onSubmit={signInWithPassword} className="mt-6 flex flex-col gap-4">
+          {emailField}
 
           <div>
-            <label htmlFor={passwordId} className={LABEL_CLASS}>
-              Password
-            </label>
+            {/* The label and the way out of a forgotten password on one line:
+                the link belongs to this field, and putting it here is what
+                stops it from reading as another way to submit the form. */}
+            <div className="flex items-baseline justify-between gap-2">
+              <label htmlFor={passwordId} className={LABEL_CLASS}>
+                Password
+              </label>
+              <Link to="/forgot-password" className={METHOD_LINK_CLASS}>
+                Forgot password?
+              </Link>
+            </div>
             {/* No `minLength`: the server applies the password policy and answers
                 a short password with the same "invalid email or password" as a
                 wrong one. Enforcing it here would tell an attacker the shape of
@@ -255,31 +361,126 @@ function RouteComponent() {
           <button
             type="submit"
             aria-disabled={pending !== null}
-            aria-busy={pending === "email" || undefined}
+            aria-busy={pending === "password" || undefined}
             className={SUBMIT_CLASS}
           >
-            {pending === "email" ? "Signing in…" : "Sign in"}
+            {pending === "password" ? "Signing in…" : "Sign in"}
           </button>
         </form>
+      ) : null}
 
-        <div aria-hidden={true} className="my-6 flex items-center gap-3">
-          <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
-          <span className="text-xs text-neutral-400 dark:text-neutral-500">or</span>
-          <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
-        </div>
+      {method === "code" ? (
+        // Two forms rather than one with a branch: the first submits an address
+        // and the second submits a code, and a single handler switching on
+        // `codeSent` would make Enter mean different things in the same field.
+        <form onSubmit={codeSent ? signInWithCode : sendCode} className="mt-6 flex flex-col gap-4">
+          {emailField}
 
-        <button
-          type="button"
-          onClick={signInWithGoogle}
-          aria-disabled={pending !== null}
-          aria-busy={pending === "google" || undefined}
-          className={GOOGLE_CLASS}
-        >
-          <GoogleLogo />
-          {pending === "google" ? "Redirecting…" : "Continue with Google"}
-        </button>
+          {codeSent ? (
+            <div>
+              <label htmlFor={codeId} className={LABEL_CLASS}>
+                Code
+              </label>
+              {/* `one-time-code` is what lets iOS and Android offer the code
+                  straight from the notification, which is the entire reason to
+                  prefer a code over a link on a phone. */}
+              <input
+                id={codeId}
+                type="text"
+                name="code"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]*"
+                maxLength={6}
+                placeholder="123456"
+                required={true}
+                readOnly={pending !== null}
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+                className={`${INPUT_CLASS} font-mono tracking-[0.3em]`}
+              />
+              <p className="mt-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+                Sent to {address}. It expires in 10 minutes.
+              </p>
+            </div>
+          ) : null}
+
+          <button
+            type="submit"
+            aria-disabled={pending !== null}
+            aria-busy={pending === "send-code" || pending === "code" || undefined}
+            className={SUBMIT_CLASS}
+          >
+            {codeSent
+              ? pending === "code"
+                ? "Signing in…"
+                : "Sign in"
+              : pending === "send-code"
+                ? "Sending…"
+                : "Email me a code"}
+          </button>
+        </form>
+      ) : null}
+
+      {method === "link" && !linkSent ? (
+        <form onSubmit={sendLink} className="mt-6 flex flex-col gap-4">
+          {emailField}
+
+          <button
+            type="submit"
+            aria-disabled={pending !== null}
+            aria-busy={pending === "send-link" || undefined}
+            className={SUBMIT_CLASS}
+          >
+            {pending === "send-link" ? "Sending…" : "Email me a sign-in link"}
+          </button>
+        </form>
+      ) : null}
+
+      {/* The other ways in. Laid out as prose rather than as buttons, because
+          they are a change of method and not a second submit — three
+          full-width buttons stacked would read as three things to press. */}
+      <p className="mt-4 text-center text-xs text-neutral-500 dark:text-neutral-400">
+        {method !== "password" ? (
+          <button type="button" onClick={() => choose("password")} className={METHOD_LINK_CLASS}>
+            Use a password
+          </button>
+        ) : null}
+        {method !== "code" ? (
+          <>
+            {method !== "password" ? <span aria-hidden={true}> · </span> : null}
+            <button type="button" onClick={() => choose("code")} className={METHOD_LINK_CLASS}>
+              Email me a code
+            </button>
+          </>
+        ) : null}
+        {method !== "link" ? (
+          <>
+            <span aria-hidden={true}> · </span>
+            <button type="button" onClick={() => choose("link")} className={METHOD_LINK_CLASS}>
+              Email me a link
+            </button>
+          </>
+        ) : null}
+      </p>
+
+      <div aria-hidden={true} className="my-6 flex items-center gap-3">
+        <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
+        <span className="text-xs text-neutral-400 dark:text-neutral-500">or</span>
+        <span className="h-px flex-1 bg-neutral-200 dark:bg-neutral-800" />
       </div>
-    </main>
+
+      <button
+        type="button"
+        onClick={signInWithGoogle}
+        aria-disabled={pending !== null}
+        aria-busy={pending === "google" || undefined}
+        className={SECONDARY_CLASS}
+      >
+        <GoogleLogo />
+        {pending === "google" ? "Redirecting…" : "Continue with Google"}
+      </button>
+    </AuthShell>
   );
 }
 

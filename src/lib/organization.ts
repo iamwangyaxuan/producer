@@ -53,8 +53,34 @@ export const DEFAULT_SEATS = {
   enterprise: 25
 } as const satisfies Record<OrganizationType, number>;
 
-function localPart(email: string) {
-  return email.split("@")[0];
+/**
+ * The name an address carries on its own: the part before the `@`, minus any
+ * plus-addressing tag.
+ *
+ * `foo+producer@example.com` is `foo`'s mailbox with a label attached — the tag
+ * exists so the recipient can tell later who they gave the address to, and it
+ * is no more part of their name than the domain is. Left in, it would show up
+ * as `foo+producer's Organization` on the first screen they ever see.
+ *
+ * Only the tag is dropped, and only for *display*: `user.email` keeps every
+ * character it arrived with, because that string is what mail is delivered to
+ * and what an invitation is matched against.
+ *
+ * Dots are deliberately not touched. Gmail ignores them, but Gmail is the only
+ * one — for most domains `zhang.san@` and `zhangsan@` are two different people,
+ * and "normalizing" them would merge two strangers.
+ *
+ * Exported because three places want the same answer: the sign-up hook in
+ * `auth.ts` fills a blank `user.name` with it, and the two functions below
+ * derive an organization name and a slug from it.
+ */
+export function nameFromEmail(email: string) {
+  const local = email.split("@")[0];
+  const tag = local.indexOf("+");
+
+  // `> 0` rather than `!== -1`: an address whose local part *starts* with `+`
+  // is unusual but legal, and trimming there would leave nothing at all.
+  return tag > 0 ? local.slice(0, tag) : local;
 }
 
 function slugify(value: string) {
@@ -66,8 +92,14 @@ function slugify(value: string) {
     .slice(0, 32);
 }
 
+/**
+ * The `user.create.before` hook in `auth.ts` has already filled a blank name
+ * with the address's local part, so this normally reads straight off `name`.
+ * The fallback stays as a second line of defence — this is also reachable from
+ * `ensurePrivateOrganizationById` for accounts created before that hook existed.
+ */
 export function privateOrganizationName(user: OrganizationOwner) {
-  return `${user.name.trim() || localPart(user.email)}'s Organization`;
+  return `${user.name.trim() || nameFromEmail(user.email)}'s Organization`;
 }
 
 /**
@@ -75,7 +107,7 @@ export function privateOrganizationName(user: OrganizationOwner) {
  * retried with a random suffix instead of failing the sign up.
  */
 async function generateSlug(adapter: DBAdapter, user: OrganizationOwner) {
-  const base = slugify(localPart(user.email)) || slugify(user.name) || FALLBACK_SLUG;
+  const base = slugify(nameFromEmail(user.email)) || slugify(user.name) || FALLBACK_SLUG;
   let candidate = base;
 
   for (let attempt = 0; attempt < 5; attempt++) {

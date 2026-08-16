@@ -13,7 +13,11 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteRouteImport } from './routes/_auth/route'
 import { Route as MenuPreviewRouteImport } from './routes/menu-preview'
 import { Route as AuthDashboardRouteRouteImport } from './routes/_auth/_dashboard/route'
+import { Route as EmailVerifiedIndexRouteImport } from './routes/email-verified/index'
+import { Route as ForgotPasswordIndexRouteImport } from './routes/forgot-password/index'
 import { Route as LoginIndexRouteImport } from './routes/login/index'
+import { Route as ResetPasswordIndexRouteImport } from './routes/reset-password/index'
+import { Route as SignupIndexRouteImport } from './routes/signup/index'
 import { Route as AuthStudioProjectIdRouteRouteImport } from './routes/_auth/studio/$projectId/route'
 import { Route as ApiAssetsIndexRouteImport } from './routes/api/assets/index'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -41,9 +45,29 @@ const AuthDashboardRouteRoute = AuthDashboardRouteRouteImport.update({
   id: '/_dashboard',
   getParentRoute: () => AuthRouteRoute,
 } as any)
+const EmailVerifiedIndexRoute = EmailVerifiedIndexRouteImport.update({
+  id: '/email-verified/',
+  path: '/email-verified/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ForgotPasswordIndexRoute = ForgotPasswordIndexRouteImport.update({
+  id: '/forgot-password/',
+  path: '/forgot-password/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginIndexRoute = LoginIndexRouteImport.update({
   id: '/login/',
   path: '/login/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResetPasswordIndexRoute = ResetPasswordIndexRouteImport.update({
+  id: '/reset-password/',
+  path: '/reset-password/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignupIndexRoute = SignupIndexRouteImport.update({
+  id: '/signup/',
+  path: '/signup/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthStudioProjectIdRouteRoute =
@@ -95,7 +119,11 @@ const ApiAssetsAssetIdContentFilenameRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/menu-preview': typeof MenuPreviewRoute
+  '/email-verified/': typeof EmailVerifiedIndexRoute
+  '/forgot-password/': typeof ForgotPasswordIndexRoute
   '/login/': typeof LoginIndexRoute
+  '/reset-password/': typeof ResetPasswordIndexRoute
+  '/signup/': typeof SignupIndexRoute
   '/studio/$projectId': typeof AuthStudioProjectIdRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
@@ -108,7 +136,11 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/menu-preview': typeof MenuPreviewRoute
+  '/email-verified': typeof EmailVerifiedIndexRoute
+  '/forgot-password': typeof ForgotPasswordIndexRoute
   '/login': typeof LoginIndexRoute
+  '/reset-password': typeof ResetPasswordIndexRoute
+  '/signup': typeof SignupIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets': typeof ApiAssetsIndexRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
@@ -123,7 +155,11 @@ export interface FileRoutesById {
   '/_auth': typeof AuthRouteRouteWithChildren
   '/menu-preview': typeof MenuPreviewRoute
   '/_auth/_dashboard': typeof AuthDashboardRouteRouteWithChildren
+  '/email-verified/': typeof EmailVerifiedIndexRoute
+  '/forgot-password/': typeof ForgotPasswordIndexRoute
   '/login/': typeof LoginIndexRoute
+  '/reset-password/': typeof ResetPasswordIndexRoute
+  '/signup/': typeof SignupIndexRoute
   '/_auth/studio/$projectId': typeof AuthStudioProjectIdRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
@@ -138,7 +174,11 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/menu-preview'
+    | '/email-verified/'
+    | '/forgot-password/'
     | '/login/'
+    | '/reset-password/'
+    | '/signup/'
     | '/studio/$projectId'
     | '/api/auth/$'
     | '/api/assets/'
@@ -151,7 +191,11 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/menu-preview'
+    | '/email-verified'
+    | '/forgot-password'
     | '/login'
+    | '/reset-password'
+    | '/signup'
     | '/api/auth/$'
     | '/api/assets'
     | '/api/assets/$assetId/complete'
@@ -165,7 +209,11 @@ export interface FileRouteTypes {
     | '/_auth'
     | '/menu-preview'
     | '/_auth/_dashboard'
+    | '/email-verified/'
+    | '/forgot-password/'
     | '/login/'
+    | '/reset-password/'
+    | '/signup/'
     | '/_auth/studio/$projectId'
     | '/api/auth/$'
     | '/api/assets/'
@@ -180,7 +228,11 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRouteRoute: typeof AuthRouteRouteWithChildren
   MenuPreviewRoute: typeof MenuPreviewRoute
+  EmailVerifiedIndexRoute: typeof EmailVerifiedIndexRoute
+  ForgotPasswordIndexRoute: typeof ForgotPasswordIndexRoute
   LoginIndexRoute: typeof LoginIndexRoute
+  ResetPasswordIndexRoute: typeof ResetPasswordIndexRoute
+  SignupIndexRoute: typeof SignupIndexRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAssetsIndexRoute: typeof ApiAssetsIndexRoute
   ApiAssetsAssetIdCompleteRoute: typeof ApiAssetsAssetIdCompleteRoute
@@ -217,11 +269,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthDashboardRouteRouteImport
       parentRoute: typeof AuthRouteRoute
     }
+    '/email-verified/': {
+      id: '/email-verified/'
+      path: '/email-verified'
+      fullPath: '/email-verified/'
+      preLoaderRoute: typeof EmailVerifiedIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/forgot-password/': {
+      id: '/forgot-password/'
+      path: '/forgot-password'
+      fullPath: '/forgot-password/'
+      preLoaderRoute: typeof ForgotPasswordIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login/': {
       id: '/login/'
       path: '/login'
       fullPath: '/login/'
       preLoaderRoute: typeof LoginIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reset-password/': {
+      id: '/reset-password/'
+      path: '/reset-password'
+      fullPath: '/reset-password/'
+      preLoaderRoute: typeof ResetPasswordIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signup/': {
+      id: '/signup/'
+      path: '/signup'
+      fullPath: '/signup/'
+      preLoaderRoute: typeof SignupIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_auth/studio/$projectId': {
@@ -340,7 +420,11 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRouteRoute: AuthRouteRouteWithChildren,
   MenuPreviewRoute: MenuPreviewRoute,
+  EmailVerifiedIndexRoute: EmailVerifiedIndexRoute,
+  ForgotPasswordIndexRoute: ForgotPasswordIndexRoute,
   LoginIndexRoute: LoginIndexRoute,
+  ResetPasswordIndexRoute: ResetPasswordIndexRoute,
+  SignupIndexRoute: SignupIndexRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAssetsIndexRoute: ApiAssetsIndexRoute,
   ApiAssetsAssetIdCompleteRoute: ApiAssetsAssetIdCompleteRoute,
