@@ -22,6 +22,7 @@ import { Route as AuthStudioProjectIdRouteRouteImport } from './routes/_auth/stu
 import { Route as ApiAssetsIndexRouteImport } from './routes/api/assets/index'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as AuthDashboardProjectsIndexRouteImport } from './routes/_auth/_dashboard/projects/index'
+import { Route as AuthBillingCheckoutSessionIdRouteImport } from './routes/_auth/billing/checkout.$sessionId'
 import { Route as AuthStudioProjectIdIndexRouteImport } from './routes/_auth/studio/$projectId/index'
 import { Route as ApiAssetsAssetIdCompleteRouteImport } from './routes/api/assets/$assetId/complete'
 import { Route as ApiAssetsAssetIdContentRouteImport } from './routes/api/assets/$assetId/content'
@@ -92,6 +93,12 @@ const AuthDashboardProjectsIndexRoute =
     path: '/projects/',
     getParentRoute: () => AuthDashboardRouteRoute,
   } as any)
+const AuthBillingCheckoutSessionIdRoute =
+  AuthBillingCheckoutSessionIdRouteImport.update({
+    id: '/billing/checkout/$sessionId',
+    path: '/billing/checkout/$sessionId',
+    getParentRoute: () => AuthRouteRoute,
+  } as any)
 const AuthStudioProjectIdIndexRoute =
   AuthStudioProjectIdIndexRouteImport.update({
     id: '/',
@@ -127,6 +134,7 @@ export interface FileRoutesByFullPath {
   '/studio/$projectId': typeof AuthStudioProjectIdRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
+  '/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
   '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
   '/projects/': typeof AuthDashboardProjectsIndexRoute
@@ -143,6 +151,7 @@ export interface FileRoutesByTo {
   '/signup': typeof SignupIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets': typeof ApiAssetsIndexRoute
+  '/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
   '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
   '/projects': typeof AuthDashboardProjectsIndexRoute
@@ -163,6 +172,7 @@ export interface FileRoutesById {
   '/_auth/studio/$projectId': typeof AuthStudioProjectIdRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/assets/': typeof ApiAssetsIndexRoute
+  '/_auth/billing/checkout/$sessionId': typeof AuthBillingCheckoutSessionIdRoute
   '/api/assets/$assetId/complete': typeof ApiAssetsAssetIdCompleteRoute
   '/api/assets/$assetId/content': typeof ApiAssetsAssetIdContentRouteWithChildren
   '/_auth/_dashboard/projects/': typeof AuthDashboardProjectsIndexRoute
@@ -182,6 +192,7 @@ export interface FileRouteTypes {
     | '/studio/$projectId'
     | '/api/auth/$'
     | '/api/assets/'
+    | '/billing/checkout/$sessionId'
     | '/api/assets/$assetId/complete'
     | '/api/assets/$assetId/content'
     | '/projects/'
@@ -198,6 +209,7 @@ export interface FileRouteTypes {
     | '/signup'
     | '/api/auth/$'
     | '/api/assets'
+    | '/billing/checkout/$sessionId'
     | '/api/assets/$assetId/complete'
     | '/api/assets/$assetId/content'
     | '/projects'
@@ -217,6 +229,7 @@ export interface FileRouteTypes {
     | '/_auth/studio/$projectId'
     | '/api/auth/$'
     | '/api/assets/'
+    | '/_auth/billing/checkout/$sessionId'
     | '/api/assets/$assetId/complete'
     | '/api/assets/$assetId/content'
     | '/_auth/_dashboard/projects/'
@@ -332,6 +345,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthDashboardProjectsIndexRouteImport
       parentRoute: typeof AuthDashboardRouteRoute
     }
+    '/_auth/billing/checkout/$sessionId': {
+      id: '/_auth/billing/checkout/$sessionId'
+      path: '/billing/checkout/$sessionId'
+      fullPath: '/billing/checkout/$sessionId'
+      preLoaderRoute: typeof AuthBillingCheckoutSessionIdRouteImport
+      parentRoute: typeof AuthRouteRoute
+    }
     '/_auth/studio/$projectId/': {
       id: '/_auth/studio/$projectId/'
       path: '/'
@@ -391,11 +411,13 @@ const AuthStudioProjectIdRouteRouteWithChildren =
 interface AuthRouteRouteChildren {
   AuthDashboardRouteRoute: typeof AuthDashboardRouteRouteWithChildren
   AuthStudioProjectIdRouteRoute: typeof AuthStudioProjectIdRouteRouteWithChildren
+  AuthBillingCheckoutSessionIdRoute: typeof AuthBillingCheckoutSessionIdRoute
 }
 
 const AuthRouteRouteChildren: AuthRouteRouteChildren = {
   AuthDashboardRouteRoute: AuthDashboardRouteRouteWithChildren,
   AuthStudioProjectIdRouteRoute: AuthStudioProjectIdRouteRouteWithChildren,
+  AuthBillingCheckoutSessionIdRoute: AuthBillingCheckoutSessionIdRoute,
 }
 
 const AuthRouteRouteWithChildren = AuthRouteRoute._addFileChildren(

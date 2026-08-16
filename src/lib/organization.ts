@@ -1,9 +1,10 @@
 import type { Member, Organization } from "better-auth/plugins";
 import type { DBAdapter, User } from "better-auth/types";
-import { count, eq } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 
 import { getDB, schema } from "#/db";
 import type { OrganizationType } from "#/db/schema";
+import { canonicalId } from "#/lib/ids";
 
 /**
  * better-auth's `Organization` plus the columns this app adds — see the table
@@ -39,13 +40,14 @@ export function isCreatableType(value: unknown): value is CreatableOrganizationT
 }
 
 /**
- * Seats a new organization is allowed before anyone pays for more.
+ * Seats an organization gets when nobody paid for a number.
  *
- * Placeholders: there is no subscription in this app yet, so these are what
- * stands in for one. A `private` workspace is its owner and no one else, which
- * is the real rule rather than a starting point. The other two are a guess at a
- * useful free tier — the number a plan grants belongs to billing, and this is
- * the seam it will replace.
+ * A `private` workspace is its owner and no one else, which is the real rule
+ * rather than a starting point. The other two are now only a floor for
+ * organizations that did not come through checkout — better-auth's own
+ * `/organization/create` endpoint still works and still has to produce a valid
+ * row — because the product path mints the seat count from what was bought.
+ * See `applyPurchasedOrganization` below for where a real number comes from.
  */
 export const DEFAULT_SEATS = {
   private: 1,
@@ -253,4 +255,203 @@ export async function countMembers(organizationId: string) {
  */
 export async function hasFreeSeat(organizationId: string, seat: number) {
   return (await countMembers(organizationId)) < seat;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Buying an organization                                                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Roles allowed to spend money in an organization's name. Members can use what
+ * has been paid for; they cannot change what is being paid for.
+ */
+const BILLING_ROLES = new Set(["owner", "admin"]);
+
+/**
+ * Whether this user may run a subscription action against this reference — the
+ * question `authorizeReference` in `auth.ts` has to answer for every call the
+ * Stripe plugin accepts.
+ *
+ * Two sources, because a reference id names an organization at two different
+ * points in its life. Once the organization exists, `member` is the authority,
+ * the same as everywhere else in this app. Before it exists — which is the
+ * normal case here, since seats are bought first — the only thing that can
+ * vouch for the id is the draft that minted it, and only for the person who
+ * started it.
+ *
+ * A malformed id is refused before either query: it can only be a forgery or a
+ * bug, and both should look the same from outside.
+ */
+export async function authorizeOrganizationBilling(userId: string, referenceId: string) {
+  if (!canonicalId.safeParse(referenceId).success) return false;
+
+  const db = getDB();
+
+  const [membership] = await db
+    .select({ role: schema.member.role })
+    .from(schema.member)
+    .where(and(eq(schema.member.organizationId, referenceId), eq(schema.member.userId, userId)))
+    .limit(1);
+
+  if (membership) return BILLING_ROLES.has(membership.role);
+
+  const [draft] = await db
+    .select({ id: schema.organizationDraft.id })
+    .from(schema.organizationDraft)
+    .where(
+      and(
+        eq(schema.organizationDraft.id, referenceId),
+        eq(schema.organizationDraft.userId, userId),
+        // A draft that has already been paid for or walked away from is not a
+        // licence to start another checkout against the same id.
+        eq(schema.organizationDraft.status, "pending")
+      )
+    )
+    .limit(1);
+
+  return Boolean(draft);
+}
+
+/** `organization.slug` is unique table-wide, so a taken one gets a random tail. */
+async function availableSlug(db: ReturnType<typeof getDB>, name: string) {
+  const base = slugify(name) || FALLBACK_SLUG;
+  let candidate = base;
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const [taken] = await db
+      .select({ id: schema.organization.id })
+      .from(schema.organization)
+      .where(eq(schema.organization.slug, candidate))
+      .limit(1);
+
+    if (!taken) break;
+
+    candidate = `${base}-${crypto.randomUUID().slice(0, 8)}`;
+  }
+
+  return candidate;
+}
+
+export interface PurchasedOrganization {
+  organizationId: string;
+  /** False when the row was already there — a replay, or a later seat change. */
+  created: boolean;
+}
+
+/**
+ * Turns a completed subscription into the organization it paid for.
+ *
+ * This is the one place `organization.seat` is written from what someone
+ * actually bought, and the reason the whole checkout can name a tenant that has
+ * no row yet: `referenceId` was minted as a draft id and becomes the
+ * organization's id verbatim, so the subscription points at the finished
+ * organization from the moment it is created rather than being repointed after.
+ *
+ * Called from the plugin's `onSubscriptionComplete`, which is reached through
+ * the webhook — and therefore has to be safe to run twice, because Stripe
+ * redelivers. It is idempotent in both directions:
+ *
+ * - the organization already exists → the seat count is brought in line with
+ *   the subscription and nothing else changes, which is also exactly what a
+ *   later seat change wants;
+ * - it does not → it and its owner's membership are written in one transaction,
+ *   so there is no window where an organization exists that nobody belongs to.
+ *
+ * `null` means the reference is not an organization this app knows how to
+ * create — an id with no draft and no row behind it. That is a legitimate
+ * answer rather than an error: the caller is a webhook handler, and refusing to
+ * invent a tenant for an id we cannot account for is the safe direction.
+ */
+export async function applyPurchasedOrganization(input: {
+  referenceId: string;
+  seats: number;
+}): Promise<PurchasedOrganization | null> {
+  if (!canonicalId.safeParse(input.referenceId).success) return null;
+
+  const db = getDB();
+  // The CHECK on the column is `>= 1`; a subscription reporting fewer seats
+  // than that is nonsense we should not write, not a reason to fail a webhook.
+  const seat = Math.max(1, Math.trunc(input.seats));
+
+  const [existing] = await db
+    .select({ id: schema.organization.id })
+    .from(schema.organization)
+    .where(eq(schema.organization.id, input.referenceId))
+    .limit(1);
+
+  if (existing) {
+    await db
+      .update(schema.organization)
+      .set({ seat })
+      .where(eq(schema.organization.id, existing.id));
+
+    // Redundant on a replay, load-bearing when the first attempt created the
+    // organization and then failed before it got here.
+    await db
+      .update(schema.organizationDraft)
+      .set({ status: "completed" })
+      .where(eq(schema.organizationDraft.id, existing.id));
+
+    return { organizationId: existing.id, created: false };
+  }
+
+  const [draft] = await db
+    .select()
+    .from(schema.organizationDraft)
+    .where(eq(schema.organizationDraft.id, input.referenceId))
+    .limit(1);
+
+  if (!draft) return null;
+
+  // The slug is picked outside the transaction and can lose a race with another
+  // organization claiming it in between, which surfaces as a unique violation
+  // rather than something worth checking for twice. Each attempt re-reads, so a
+  // collision resolves on the next pass instead of retrying the same name.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const slug = await availableSlug(db, draft.name);
+
+    try {
+      await db.transaction(async (tx) => {
+        await tx.insert(schema.organization).values({
+          // Not a default: this id was promised to the subscription before any
+          // of this existed, and every reference to it already uses that value.
+          id: draft.id,
+          name: draft.name,
+          slug,
+          ownerId: draft.userId,
+          type: draft.type,
+          seat,
+          createdAt: new Date()
+        });
+
+        await tx.insert(schema.member).values({
+          organizationId: draft.id,
+          userId: draft.userId,
+          role: OWNER_ROLE,
+          createdAt: new Date()
+        });
+
+        await tx
+          .update(schema.organizationDraft)
+          .set({ status: "completed" })
+          .where(eq(schema.organizationDraft.id, draft.id));
+      });
+
+      return { organizationId: draft.id, created: true };
+    } catch (error) {
+      // A concurrent delivery of the same event got there first — the outcome
+      // we wanted, reached by somebody else.
+      const [raced] = await db
+        .select({ id: schema.organization.id })
+        .from(schema.organization)
+        .where(eq(schema.organization.id, draft.id))
+        .limit(1);
+
+      if (raced) return { organizationId: raced.id, created: false };
+
+      if (attempt === 4) throw error;
+    }
+  }
+
+  return null;
 }

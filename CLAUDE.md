@@ -29,7 +29,7 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 - **没有 `db:push`，也不要加回来**：push 直接 diff 库并应用，不写下任何记录，于是同一处改动之后仍会被 `generate` 写进迁移，`migrate` 再去建一个已经存在的对象就会失败。两者是二选一，不是"快的那条"和"稳的那条"。（顺带解决了 push 不 diff `check()` 表达式那个坑——改约束条件时它会安静地报告无变更。）
 - 线上迁移同样从本地跑，把 `DATABASE_URL` 指向生产库即可。Worker 里没有文件系统去读那些 `.sql`，`migrate()` 在运行时跑不了。
 - `src/routeTree.gen.ts` 和 `src/paraglide/` 是 vite 插件的生成产物，不要手改（路由树也可 `pnpm generate-routes`）。
-- 环境变量分两处，**`.env.local` 只管本地**：`drizzle.config.ts` 读 `DATABASE_URL`（只供 `db:generate` / `db:migrate` / `db:studio`），dev server 把其余键注入 `env`（`BETTER_AUTH_URL/SECRET`、`GOOGLE_CLIENT_ID/SECRET`、`VITE_GOOGLE_CLIENT_ID`、`AI_GATEWAY_API_KEY`、`R2_ACCOUNT_ID/ACCESS_KEY_ID/SECRET_ACCESS_KEY/BUCKET`）。**应用运行时的数据库连接不走 `DATABASE_URL`**：本地走 `wrangler.jsonc` 里 hyperdrive 的 `localConnectionString`（必须与 `DATABASE_URL` 同库，否则迁移建表的库和应用连的库是两个地方——现在画布快照也落库，这条比以前更要命），线上走真实 Hyperdrive。`wrangler deploy` **不会**上传 `.env.local`——线上同名变量必须经 `wrangler secret put` 或 dashboard 配置，部署前还要把 hyperdrive 的占位 id 换成真实值。`R2_BUCKET` 必须与 `MEDIA` 绑定实际指向的桶一致（本地 `producer-media-dev`，线上 `producer-media`），否则预签名 PUT 和 binding 读会打到两个桶：上传成功、画布 404。
+- 环境变量分两处，**`.env.local` 只管本地**：`drizzle.config.ts` 读 `DATABASE_URL`（只供 `db:generate` / `db:migrate` / `db:studio`），dev server 把其余键注入 `env`（`BETTER_AUTH_URL/SECRET`、`GOOGLE_CLIENT_ID/SECRET`、`VITE_GOOGLE_CLIENT_ID`、`AI_GATEWAY_API_KEY`、`R2_ACCOUNT_ID/ACCESS_KEY_ID/SECRET_ACCESS_KEY/BUCKET`、`STRIPE_SECRET_KEY/WEBHOOK_SECRET`）。**应用运行时的数据库连接不走 `DATABASE_URL`**：本地走 `wrangler.jsonc` 里 hyperdrive 的 `localConnectionString`（必须与 `DATABASE_URL` 同库，否则迁移建表的库和应用连的库是两个地方——现在画布快照也落库，这条比以前更要命），线上走真实 Hyperdrive。`wrangler deploy` **不会**上传 `.env.local`——线上同名变量必须经 `wrangler secret put` 或 dashboard 配置，部署前还要把 hyperdrive 的占位 id 换成真实值。`R2_BUCKET` 必须与 `MEDIA` 绑定实际指向的桶一致（本地 `producer-media-dev`，线上 `producer-media`），否则预签名 PUT 和 binding 读会打到两个桶：上传成功、画布 404。
 
 ## 架构要点
 
@@ -41,14 +41,29 @@ pnpm exec tsc --noEmit  # 类型检查（没有 typecheck 脚本）
 
 - better-auth + organization 插件。组织有三种 `type`：`private`（个人工作区）、`team`、`enterprise`，`ownerId` 记归属。**每人恰好一个 private，team/enterprise 不限个数**——这条规则由部分唯一索引 `organization_private_owner_idx`（`ownerId` where `type='private'`）兜底，不是靠应用层先查后插（并发登录会同时通过检查）。新用户在 `databaseHooks` 里自动获得 private 组织；新会话若无 `activeOrganizationId` 兜底到它。
 - **`ownerId` 不是成员关系**：所有鉴权都查 `member` 表，从不看这一列。它只说这个组织归谁，所以外键是 `restrict` 而非 `cascade`——删一个还拥有组织的用户必须是显式动作，不能顺手把整个团队的项目和资产带走。
-- `organization.seat` 是**已付费的席位上限，不是当前人数**：它是输入（将来由订阅写入），**绝不从 `member` 反推**——真实人数永远现查 `member`，把上限改成派生值就等于每次有人进出都覆盖掉人家买的额度。新建组织的默认额度见 `DEFAULT_SEATS`（private 恒为 1，是规则而非起步值），`seat >= 1` 由 CHECK 约束兜底。目前**没有任何代码路径修改这一列**，扩容要等计费接入。
+- `organization.seat` 是**已付费的席位上限，不是当前人数**：它是输入，由订阅写入（`applyPurchasedOrganization` 从 `subscription.seats` 抄过来），**绝不从 `member` 反推**——真实人数永远现查 `member`，把上限改成派生值就等于每次有人进出都覆盖掉人家买的额度。`DEFAULT_SEATS` 现在只兜底没走购买的组织：private（恒为 1，是规则而非起步值）和 better-auth 自带 `/organization/create` 建出来的。`seat >= 1` 由 CHECK 约束兜底。
 - 上限在 `beforeAddMember` / `beforeAcceptInvitation` 两处强制，**有两个已知缺口**：SSO 的组织 provisioning 和 SCIM 加成员都直接 `adapter.create` 写 member，不经过任何 `organizationHooks`（整个 sso 包里没有这个词），能把组织顶过额度；检查本身也不是原子的（member 行由 better-auth 在钩子返回后才插），并发接受邀请可能各自看到最后一个空位。两者都只影响强制，不影响真相——人数任何时候都能从 `member` 数出来跟计费对账。
+- **better-auth 自带的 `/organization/create` 端点没被摘掉**，直接调它仍能建出一个 `DEFAULT_SEATS` 的组织、不经过结账。产品里没有入口指向它（创建组织走购买，见下面的计费一节），留着是因为 SSO/SCIM provisioning 和将来的管理用途要用；`beforeCreateOrganization` 的存在就是保证这条路建出来的行仍然合法。
 - **组织的 `ownerId` 绝不接受客户端传值**（`additionalFields` 里 `input: false`，字段被剔出请求体的 zod schema）；`type` 允许客户端请求但只放行 team/enterprise，最终值由 `beforeCreateOrganization` 落定。
 - better-auth 的 `additionalFields` 是**写入的前提而非装饰**：adapter 按声明过的字段逐个搬运数据，没声明的列会被静默丢弃（不是报错）。给 organization 加列必须同步加声明，否则 NOT NULL 列会以"插入时缺值"的形式炸在数据库层。
 - **租户范围永远取自会话的 `activeOrganizationId`，绝不接受客户端传来的 organizationId。**
 - 两个访问闸门都在服务端，且都重新 join `member` 表校验成员关系（不信任会话快照里的成员身份）：`src/server/canvas-access.ts` 的 `getProjectAccess`、`src/server/asset-access.ts` 的 `requireAssetAccess`。它们接受 `Headers` 而非 Request——WebSocket 升级、DO alarm、server function 手里各自只有 headers。
 - **`createServerFn` 是裸 HTTP 端点，`_auth` 路由守卫管不到它**，每个 handler 必须自己解析会话。
 - 库表 id 一律小写 uuidv7；所有接客户端 id 的入口共用 `src/lib/ids.ts` 的 `canonicalId`，查库前就拒掉非小写/非 uuid 的 id（DO 房间名按字节区分大小写，大写 URL 会分叉出第二个画布，且各入口对同一条 URL 必须给同一个答案）。画布节点 id 是例外：`crypto.randomUUID()`（v4），只作 Yjs key，不进库表也不进房间名。
+
+### 计费与买组织（`src/lib/plans.ts`、`src/lib/billing.ts`、`src/server/billing/*`）
+
+- **组织是买出来的，不是建出来的**：产品里创建 team/enterprise 的唯一入口是"选套餐 + 定座位数 → 结账 → 付款成功后组织才落库"。所以先有订阅、后有组织，这个顺序决定了下面几乎所有设计。
+- **`organization_draft` 是为了让结账能指着一个还不存在的组织**。它的 `id` 由 `newRowId()` 预先铸出，既是 `subscription.referenceId`，也是组织将来的 `organization.id`——**同一个值，不是事后改指向**，所以订阅从第一次调用起就指着最终那个租户。它同时是这次结账的授权凭据：`authorizeReference` 对已存在的组织查 `member`（owner/admin），对还不存在的查这张表（本人 + 仍 `pending`）。
+- `subscription.referenceId` **故意不是外键**：写它的时候组织行还不存在，加约束就等于拒绝掉发起购买的那次插入。
+- **`customerType` 用默认的 `user`，`stripe.organization.enabled` 关着**。那个开关会把 Stripe customer 挂到组织上，而组织在结账时还不存在；付款人是人，这也确实是事实。买的是什么由 `referenceId` 说。顺带避开了它的 `syncSeatsAfterMemberChange`——那个 hook 会把 seats 同步成当前成员数，跟"seat 是买来的上限"直接冲突（我们不设 `seatPriceId`，所以即便开了它也会提前 return，但不要去踩）。
+- **Stripe 是真的，账号是假的**（`fake-stripe.ts`）：插件、SDK、`subscription` 表、`authClient.subscription.*` 全是生产代码，只有最底下那层 HTTP 被 `Stripe.createFetchHttpClient(fakeStripeFetch)` 换掉，由本地一张 `stripe_mock_object` 表冒充 api.stripe.com。**接缝是传输层而不是 SDK**——照插件"我们以为它读什么"去捏一个假 client，它多读一个字段就穿帮；按 wire 形状答，SDK 能解析的插件就都拿得到。设了 `STRIPE_SECRET_KEY` 就整体切到真账号（判据只有"这个变量有没有值"，**不看 `sk_test_` 前缀**：test mode 也是真账号）。
+- **付款那一下是靠签名 webhook 闭环的**（`webhook.ts`）：模拟结账页调 `deliverStripeEvent`，自己按 Stripe 的算法 HMAC 签名，再把事件交给 `auth.handler`——不是 `fetch` 自己的 URL（省掉回环解析、subrequest 配额，也保证投递和等待在同一个 isolate）。签名是真验的，`constructEventAsync` 会拒掉签错的。所以 `onCheckoutSessionCompleted → onSubscriptionComplete → applyPurchasedOrganization` 这条链是按真实路径跑到的。
+- **不能相信 webhook 的返回码**：插件把 `onSubscriptionComplete` 包在 try/catch 里，只 log 不上抛，200 照返。所以 `payCheckoutOrder` 在投递完之后**自己回读组织行**，读不到就如实告诉用户"钱付了但组织没建出来，可以重试"。真 Stripe 下同样成立（投递是异步的），这个校验两边都需要。
+- `applyPurchasedOrganization` 必须幂等（Stripe 会重投）：组织已存在就只把 seat 同步过去，不存在就在一个事务里写组织 + owner 的 member 行 + 把 draft 标 completed，slug 撞了换个后缀重试。
+- **结账页的报错是直接显示给人看的**，跟别处 `import.meta.env.DEV` 遮住 message 的做法相反——"钱付了但组织没建出来"是唯一必须让人看见的那句。泄露风险在源头堵：`withCheckoutMessages` 把任何不是 `CheckoutError` 的失败 log 掉换成安全文案，所以到达客户端的每一句都是写给人读的。
+- 目录在 `src/lib/plans.ts`（两端共用，跟 `models.ts` 同理）：`plan.name` 同时是 Stripe 的 plan 名和它创建出来的 `organization.type`。里面的 `priceId` 是**可读的占位串**而不是长得像真 id 的假 id——换真账号时要改的就是这两行。
+- 代价：`stripe` SDK 让 Worker 打包后 gzip 多了约 590KB（现在总计约 2.2MB，免费版上限 3MB）。
 
 ### 账号与密码（`routes/login|signup|forgot-password|reset-password|email-verified`）
 

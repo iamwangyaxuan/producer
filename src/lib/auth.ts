@@ -1,5 +1,6 @@
 import { scim } from "@better-auth/scim";
 import { sso } from "@better-auth/sso";
+import { stripe as stripePlugin } from "@better-auth/stripe";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
@@ -8,6 +9,8 @@ import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { env } from "cloudflare:workers";
 
 import { getDB, schema } from "#/db";
+import { SEAT_PLANS } from "#/lib/plans";
+import { stripe as stripeClient, stripeWebhookSecret } from "#/server/billing/stripe-client";
 import { sendEmail } from "#/server/email/send";
 import {
   passwordChangedEmail,
@@ -19,6 +22,8 @@ import {
 
 import {
   activateForNewUser,
+  applyPurchasedOrganization,
+  authorizeOrganizationBilling,
   CREATABLE_TYPES,
   DEFAULT_SEATS,
   ensurePrivateOrganization,
@@ -258,6 +263,13 @@ export const auth = betterAuth({
         }
       },
       organizationHooks: {
+        // Reached only by a direct call to `/organization/create`. The product
+        // path does not come through here at all: an organization is bought
+        // before it exists, so it is written by `applyPurchasedOrganization`
+        // once the subscription completes — with the seat count that was paid
+        // for, and with the id the subscription already names. This hook is
+        // what keeps better-auth's own endpoint producing a valid row anyway,
+        // on the free default rather than a purchased number.
         beforeCreateOrganization: async ({ organization, user }) => {
           const requested = organization.type ?? DEFAULT_CREATED_TYPE;
 
@@ -305,6 +317,67 @@ export const auth = betterAuth({
     }),
     scim({
       storeSCIMToken: "hashed"
+    }),
+    /**
+     * Seats are sold here, and an organization is what a purchase produces.
+     *
+     * After `organization`, because the plugin reaches for that one during
+     * `init` — it only rewires its hooks when `organization.enabled` is set,
+     * which this does not, but ordering it correctly costs nothing and makes
+     * enabling that later a one-line change rather than a debugging session.
+     *
+     * `organization.enabled` stays off because of the order this app buys in.
+     * That option makes the *organization* the Stripe customer, which requires
+     * the organization to exist when checkout starts; here it does not exist
+     * yet, so the customer is the person paying — which is also simply true.
+     * What the subscription is *for* is carried by `referenceId` instead, and
+     * that is the id the organization is later created with.
+     */
+    stripePlugin({
+      stripeClient,
+      stripeWebhookSecret,
+      // Signing up should not depend on a billing system being reachable, and
+      // most accounts never buy anything. The customer is created on the first
+      // checkout instead, which the plugin's upgrade path already does.
+      createCustomerOnSignUp: false,
+      subscription: {
+        enabled: true,
+        // The catalogue, narrowed to what the plugin needs. `name` doubles as
+        // the organization type the plan creates — see `plans.ts`.
+        plans: SEAT_PLANS.map((plan) => ({
+          name: plan.name,
+          priceId: plan.priceId,
+          limits: { seats: plan.maxSeats }
+        })),
+        // No `requireEmailVerification`: this app sends no verification mail,
+        // so turning it on would make every email/password account unable to
+        // buy anything, with nothing they could do about it.
+        //
+        // Every subscription action names a reference id, and this is the only
+        // thing standing between a caller and somebody else's billing. It is
+        // reached for organizations that exist and for ones that are still just
+        // a paid-for intention; `authorizeOrganizationBilling` knows both.
+        authorizeReference: async ({ user, referenceId }) =>
+          authorizeOrganizationBilling(user.id, referenceId),
+        /**
+         * The checkout completed, so the organization it bought can exist.
+         *
+         * This runs inside the webhook handler, which catches everything it
+         * throws and only logs it — so a failure here is invisible from the
+         * outside. That is why the checkout page verifies the outcome itself
+         * rather than trusting the delivery, and why the work is idempotent:
+         * Stripe redelivers, and the retry has to land on the same
+         * organization rather than a second one.
+         */
+        onSubscriptionComplete: async ({ subscription }) => {
+          if (!subscription?.referenceId) return;
+
+          await applyPurchasedOrganization({
+            referenceId: subscription.referenceId,
+            seats: subscription.seats ?? 1
+          });
+        }
+      }
     }),
     // Keep last: it writes the cookies produced by every other plugin.
     tanstackStartCookies()

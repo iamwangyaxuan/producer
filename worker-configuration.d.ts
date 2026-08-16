@@ -16,6 +16,8 @@ interface __BaseEnv_Env {
   R2_SECRET_ACCESS_KEY: string;
   R2_BUCKET: string;
   AI_GATEWAY_API_KEY: string;
+  STRIPE_SECRET_KEY: string;
+  STRIPE_WEBHOOK_SECRET: string;
   CanvasRoom: DurableObjectNamespace<import("./src/server").CanvasRoom>;
 }
 declare namespace Cloudflare {
@@ -44,6 +46,8 @@ declare namespace NodeJS {
       | "R2_SECRET_ACCESS_KEY"
       | "R2_BUCKET"
       | "AI_GATEWAY_API_KEY"
+      | "STRIPE_SECRET_KEY"
+      | "STRIPE_WEBHOOK_SECRET"
     >
   > {}
 }

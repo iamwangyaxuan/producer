@@ -52,7 +52,18 @@ export const user = pgTable("user", {
   role: text("role"),
   banned: boolean("banned").default(false),
   banReason: text("ban_reason"),
-  banExpires: tstz("ban_expires")
+  banExpires: tstz("ban_expires"),
+  /**
+   * Who this person is on the billing side. Written by the Stripe plugin the
+   * first time they pay for anything, and never by us.
+   *
+   * It hangs off the user rather than the organization because of the order the
+   * purchase happens in: an organization is bought before it exists, so at the
+   * moment the customer record is needed there is no organization row to attach
+   * it to. The payer is the person; what they bought is named by
+   * `subscription.referenceId`.
+   */
+  stripeCustomerId: text("stripe_customer_id")
 });
 
 export const session = pgTable(
@@ -157,10 +168,14 @@ export const organization = pgTable(
      * this is the allowance, and a full team sits at the point where the two
      * are equal.
      *
-     * At least 1, because an organization always holds its owner. Nothing in
-     * the app writes this column yet — see `DEFAULT_SEATS` for what a new
-     * organization starts with, and the seat check in `auth.ts` for where the
-     * ceiling is actually enforced.
+     * At least 1, because an organization always holds its owner. The value is
+     * copied off `subscription.seats` when a purchase completes (see
+     * `applyPurchasedOrganization` in `lib/organization.ts`) — the subscription
+     * is the billing record, this is the number every runtime check reads, and
+     * they are kept as two columns so a seat check never has to know whether
+     * billing is reachable. `DEFAULT_SEATS` covers the organizations that were
+     * not bought: private workspaces, and anything better-auth's own
+     * `/organization/create` endpoint makes.
      */
     seat: integer("seat").default(1).notNull()
   },
@@ -216,6 +231,116 @@ export const invitation = pgTable(
   (table) => [
     index("invitation_organizationId_idx").on(table.organizationId),
     index("invitation_email_idx").on(table.email)
+  ]
+);
+
+/**
+ * A Stripe subscription, mirrored locally. Owned end to end by
+ * `@better-auth/stripe` — every column here is one the plugin reads or writes,
+ * which is why the names are its names rather than this schema's.
+ *
+ * `referenceId` is what the subscription was bought *for*, and it holds an
+ * organization id. It is deliberately **not** a foreign key: this app sells the
+ * organization before it exists, so the row is written while `organization`
+ * still has nothing at that id — a constraint here would reject the insert that
+ * starts the purchase. What closes the loop instead is `organization_draft`,
+ * which reserves the id and records who is allowed to pay against it.
+ *
+ * `status` carries Stripe's vocabulary verbatim (`incomplete`, `trialing`,
+ * `active`, `past_due`, `canceled`, …) and gets no CHECK constraint, unlike the
+ * status columns this app owns: the set belongs to Stripe, and a value we have
+ * not heard of yet has to be storable rather than rejected at 3am by a webhook.
+ */
+export const subscription = pgTable(
+  "subscription",
+  {
+    id: uuid("id").primaryKey().default(sql.raw(generate_id_fun)),
+    plan: text("plan").notNull(),
+    referenceId: text("reference_id").notNull(),
+    stripeCustomerId: text("stripe_customer_id"),
+    stripeSubscriptionId: text("stripe_subscription_id"),
+    status: text("status").default("incomplete").notNull(),
+    periodStart: tstz("period_start"),
+    periodEnd: tstz("period_end"),
+    trialStart: tstz("trial_start"),
+    trialEnd: tstz("trial_end"),
+    cancelAtPeriodEnd: boolean("cancel_at_period_end").default(false),
+    cancelAt: tstz("cancel_at"),
+    canceledAt: tstz("canceled_at"),
+    endedAt: tstz("ended_at"),
+    /** How many were paid for — the number `organization.seat` is copied from. */
+    seats: integer("seats"),
+    billingInterval: text("billing_interval"),
+    stripeScheduleId: text("stripe_schedule_id"),
+    // Not in the plugin's field list, so the adapter never carries them and
+    // they are filled by the database alone: `defaultNow()` on insert, and
+    // drizzle's `$onUpdate` on every update the adapter issues through it.
+    createdAt: tstz("created_at").defaultNow().notNull(),
+    updatedAt: tstz("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull()
+  },
+  (table) => [
+    index("subscription_referenceId_idx").on(table.referenceId),
+    // Both are how a webhook finds the row it is about, and neither is unique:
+    // a reference accumulates one row per purchase attempt, and Stripe ids are
+    // null until the checkout that mints them completes.
+    index("subscription_stripeSubscriptionId_idx").on(table.stripeSubscriptionId),
+    index("subscription_stripeCustomerId_idx").on(table.stripeCustomerId)
+  ]
+);
+
+export const ORGANIZATION_DRAFT_STATUSES = ["pending", "completed", "canceled"] as const;
+
+export type OrganizationDraftStatus = (typeof ORGANIZATION_DRAFT_STATUSES)[number];
+
+/**
+ * An organization someone has started paying for and that does not exist yet.
+ *
+ * It exists because of the order this app insists on: seats are bought *before*
+ * the organization is created, so the whole checkout has to name a tenant that
+ * has no row. `id` is that name — it is minted here and later becomes
+ * `organization.id` verbatim, which is what lets `subscription.referenceId`
+ * point at the finished organization from the moment the purchase starts,
+ * instead of being rewritten afterwards.
+ *
+ * It is also the authorization record for the checkout. `authorizeReference` in
+ * `auth.ts` is handed a reference id and has to answer whether this user may
+ * pay against it; for an organization that already exists the answer comes from
+ * `member`, and for one that does not, it comes from here.
+ *
+ * The row survives completion rather than being deleted: it is the only record
+ * of what was ordered, so a purchase whose organization failed to materialize
+ * is still recoverable from it — and a replayed webhook can tell "already done"
+ * from "never happened".
+ */
+export const organizationDraft = pgTable(
+  "organization_draft",
+  {
+    id: uuid("id").primaryKey().default(sql.raw(generate_id_fun)),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** Never `private`: that one is created at sign up and is not for sale. */
+    type: text("type").$type<OrganizationType>().notNull(),
+    seats: integer("seats").notNull(),
+    status: text("status").$type<OrganizationDraftStatus>().default("pending").notNull(),
+    createdAt: tstz("created_at").defaultNow().notNull(),
+    updatedAt: tstz("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull()
+  },
+  (table) => [
+    index("organization_draft_userId_idx").on(table.userId),
+    check("organization_draft_type_check", sql`${table.type} in ('team', 'enterprise')`),
+    check("organization_draft_seats_check", sql`${table.seats} >= 1`),
+    check(
+      "organization_draft_status_check",
+      sql`${table.status} in ('pending', 'completed', 'canceled')`
+    )
   ]
 );
 
@@ -451,6 +576,46 @@ export const assetReference = pgTable(
   ]
 );
 
+/**
+ * The stand-in Stripe account: every object the fake backend in
+ * `server/billing/fake-stripe.ts` has handed out, exactly as Stripe's API would
+ * have serialized it.
+ *
+ * It is a table rather than a module-level map because a checkout outlives the
+ * request that created it — the session is minted by one request, read by the
+ * page the browser lands on, and settled by a third — and Worker isolates share
+ * no memory across any of those. Postgres is the only thing all three can see.
+ *
+ * `id` is Stripe's own id string (`cus_…`, `cs_…`, `sub_…`), not a uuid, which
+ * is the point: these values are handed to the plugin, stored in
+ * `subscription.stripeCustomerId`, and echoed back on the next request, so they
+ * have to look and behave exactly like the real ones.
+ *
+ * **This whole table is scaffolding.** Point `STRIPE_SECRET_KEY` at a real
+ * account and nothing reads it again; it can then be dropped in one migration.
+ */
+export const stripeMockObject = pgTable(
+  "stripe_mock_object",
+  {
+    id: text("id").primaryKey(),
+    /** Stripe's own discriminator: `customer`, `checkout.session`, `subscription`. */
+    object: text("object").notNull(),
+    /**
+     * Lifted out of `data` because it is the one field the fake backend filters
+     * on — `subscriptions.list({ customer })` is on the upgrade path — and a
+     * jsonb expression index for a single key is more machinery than a column.
+     */
+    customerId: text("customer_id"),
+    data: jsonb("data").$type<Record<string, unknown>>().notNull(),
+    createdAt: tstz("created_at").defaultNow().notNull(),
+    updatedAt: tstz("updated_at")
+      .defaultNow()
+      .$onUpdate(() => /* @__PURE__ */ new Date())
+      .notNull()
+  },
+  (table) => [index("stripe_mock_object_object_customerId_idx").on(table.object, table.customerId)]
+);
+
 export const userRelations = relations(user, ({ many }) => ({
   sessions: many(session),
   accounts: many(account),
@@ -458,7 +623,22 @@ export const userRelations = relations(user, ({ many }) => ({
   ownedOrganizations: many(organization),
   invitations: many(invitation),
   ssoProviders: many(ssoProvider),
-  projects: many(project)
+  projects: many(project),
+  organizationDrafts: many(organizationDraft),
+}));
+
+/**
+ * `subscription` gets none of these on purpose: its only link to the rest of the
+ * schema is `referenceId`, which is a plain string precisely because the row it
+ * names does not exist yet when the subscription is written. Declaring a
+ * relation over a column that is not a foreign key would describe a join
+ * Postgres cannot guarantee.
+ */
+export const organizationDraftRelations = relations(organizationDraft, ({ one }) => ({
+  user: one(user, {
+    fields: [organizationDraft.userId],
+    references: [user.id]
+  })
 }));
 
 export const sessionRelations = relations(session, ({ one }) => ({
