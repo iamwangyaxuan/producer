@@ -7,25 +7,15 @@
   "name": "producer",
   "compatibility_date": "2026-08-08",
   "compatibility_flags": ["nodejs_compat"],
-  /**
-   * A custom entry rather than Start's own: it re-exports Start's fetch
-   * handler unchanged, and additionally exports the CanvasRoom Durable Object
-   * and routes its `/parties/...` WebSocket traffic — Start has no WebSocket
-   * path of its own.
-   */
   "main": "src/server.ts",
   "durable_objects": {
     "bindings": [
       {
-        // The binding's kebab-cased name is also the URL segment the client
-        // dials: /parties/canvas-room/<projectId>.
         "name": "CanvasRoom",
         "class_name": "CanvasRoom"
       }
     ]
   },
-  // The declarative successor to "migrations": marks the class as a SQLite-
-  // backed Durable Object (which is where each canvas persists its document).
   "exports": {
     "CanvasRoom": { "type": "durable-object", "storage": "sqlite" }
   },
@@ -33,16 +23,6 @@
     "enabled": true
   },
   "upload_source_maps": true,
-  // Media bytes for the asset layer (AI generations + user uploads). `remote`
-  // matters: uploads go straight from the browser to R2 via presigned S3 URLs,
-  // which always hit the real endpoint — a locally simulated binding would be
-  // reading a different store than the one uploads land in, so local dev binds
-  // to the real dev bucket (`preview_bucket_name`) instead.
-  // Hourly, for the asset sweep in `src/server.ts`: tombstoned rows still
-  // holding their bytes, and uploads or generations that were started and
-  // never finished. Both wait out a grace period first, so the cadence only
-  // decides how promptly storage is reclaimed, never whether live work is
-  // interrupted.
   "triggers": {
     "crons": ["17 * * * *"]
   },
